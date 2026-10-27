@@ -74,6 +74,11 @@ public enum Button: Sendable, CaseIterable {
     /// as on a Mac, or with the screen upright, where they're below the game.
     public internal(set) static var touchControls: [Rect] = []
 
+    /// Whether the touch controls stand aside, for a window that takes taps all over the canvas, as an inventory's grid
+    /// does: while it's true they don't show, `touchControls` is empty, and every finger is the pointer. A game sets it
+    /// as such a window opens and clears it as it closes, and the controls come back as they were.
+    public static var touchControlsAside = false
+
     /// What a player plays with, for `Input.using`.
     public enum Device: Sendable {
         /// A keyboard, and the mouse with it.

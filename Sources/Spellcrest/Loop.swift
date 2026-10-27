@@ -250,6 +250,7 @@ final class GameView: MTKView {
         guard let drawable = drawable() else { return }
         #if os(iOS)
         if Input.hardware { for case let controls as TouchControls in subviews { controls.shown = false } }
+        for case let controls as TouchControls in subviews { controls.aside = Input.touchControlsAside }
         #endif
         let window = MTLRenderPassDescriptor()
         window.colorAttachments[0].texture = drawable.texture

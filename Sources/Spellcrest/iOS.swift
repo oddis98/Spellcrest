@@ -109,7 +109,7 @@ final class GameViewController: UIViewController {
 
 /// A D-pad and A, B, X and Y buttons, drawn over the game. Every finger that lands on them holds the buttons under it,
 /// and the first that doesn't is the game's pointer. They hide while a keyboard or controller is used (`GameView`),
-/// and come back with a touch.
+/// and come back with a touch; and they stand aside while the game says (`Input.touchControlsAside`).
 final class TouchControls: UIView {
     private var held: Set<Button> = []
     private var fingers: Set<UITouch> = [] // on the controls
@@ -121,6 +121,16 @@ final class TouchControls: UIView {
             report()
         }
     }
+    /// Standing aside for the game (`Input.touchControlsAside`): what's held let go, and every finger the pointer.
+    var aside = false {
+        didSet {
+            guard aside != oldValue else { return }
+            if aside { (fingers, held, Input.touched) = ([], [], []) }
+            setNeedsDisplay()
+            report()
+        }
+    }
+    private var showing: Bool { shown && !aside }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -151,14 +161,14 @@ final class TouchControls: UIView {
     /// Tells the game where the controls are over its canvas, `Input.touchControls`, as they show or move.
     private func report() {
         let (canvas, viewport) = (GameApp.resolution, viewport)
-        Input.touchControls = shown ? layout.rectangles(over: canvas, at: CGPoint(x: viewport.originX, y: viewport.originY),
+        Input.touchControls = showing ? layout.rectangles(over: canvas, at: CGPoint(x: viewport.originX, y: viewport.originY),
                                                          scale: viewport.width / Double(canvas.width)) : []
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         let layout = layout
         for touch in touches {
-            if shown, layout.covers(touch.location(in: self)) { fingers.insert(touch) } else if pointing == nil { pointing = touch }
+            if showing, layout.covers(touch.location(in: self)) { fingers.insert(touch) } else if pointing == nil { pointing = touch }
         }
         shown = true
         update()
@@ -186,7 +196,7 @@ final class TouchControls: UIView {
     }
 
     override func draw(_ rect: CGRect) {
-        guard shown else { return }
+        guard showing else { return }
         let layout = layout
         func circle(_ center: CGPoint, _ radius: Double, pressed: Bool) {
             UIColor(white: 1, alpha: pressed ? 0.55 : 0.25).setFill()
