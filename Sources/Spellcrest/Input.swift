@@ -56,7 +56,8 @@ public enum Button: Sendable, CaseIterable {
 
     /// Where the mouse is over the game, or the finger that's the pointer, in canvas pixels from the top-left corner;
     /// nil when there's none. Dragged past the canvas's edge, it stays on the edge until it lets go. Add the scene's
-    /// `camera` for world pixels: `if Input.pressed(.pointer), let point = Input.pointer, chest.contains(point + camera)`.
+    /// `camera` for world pixels: `if Input.pressed(.pointer), let point = Input.pointer, chest.contains(point + camera)`;
+    /// in an isometric scene, for the picture's, and the floor under it is `projection.floor(under: point + camera)`.
     public private(set) static var pointer: Vector?
 
     /// Where the player's pushing, no longer than 1, y going down: a controller's left stick, from nothing at the edge of
@@ -64,6 +65,15 @@ public enum Button: Sendable, CaseIterable {
     /// long whichever way, diagonals too; zero when nothing's pushed. `velocity = Input.direction * 60` goes 60 pixels a
     /// second every way, where the D-pad's buttons alone go faster diagonally.
     public private(set) static var direction = Vector.zero
+
+    /// `direction` as a way across `scene`'s floor, as long: in an isometric scene, up goes up the picture, which is up and
+    /// left on the floor, right goes right, and a diagonal along one of the floor's edges, which the picture shows at half
+    /// a pixel down for each across, so a player walks the lines the floor's drawn with; in a flat scene, `direction` as
+    /// it is. A tap walks to the floor under it: `scene.projection.floor(under: point + scene.camera)`.
+    public static func direction(in scene: Scene) -> Vector {
+        guard scene.projection == .isometric else { return direction }
+        return [direction.x + direction.y, direction.y - direction.x] / 2.squareRoot()
+    }
 
     /// What the player's using, by what last pressed a button or moved the pointer, for a hint that names a button, as
     /// "C swings" on a keyboard and "X swings" on a controller do. It starts as touch on iOS and the keyboard on a Mac.

@@ -12,7 +12,11 @@ import Synchronization
     /// The level's tiles, drawn behind the entities but for its layers `above` them. `Entity.move(_:)` stops against
     /// its solid ones.
     public var tilemap: Tilemap?
-    /// Top-left corner of the view, in world pixels.
+    /// How its world is drawn: its map's projection, flat without one. In an isometric scene, entities stand on their
+    /// hitboxes, drawn in front of and behind each other as they stand, and `camera` is in the picture's pixels.
+    public var projection: Projection { tilemap?.projection ?? .flat }
+    /// Top-left corner of the view, in world pixels; in an isometric scene, in the picture's pixels, where `projection`
+    /// draws the world, as particles and bends are.
     public var camera = Vector.zero
     /// An entity the camera keeps in the middle of the view, never showing past the tilemap's edges. A map smaller
     /// than the view sits in the middle of it. It sets `camera` each time the scene draws.
@@ -175,7 +179,7 @@ import Synchronization
     /// The same, with the object named in a string.
     @_disfavoredOverload public func make(_ name: String, at position: Vector, properties: [String: String] = [:]) -> Entity {
         let placed = TilemapFile.Object(name: name, x: Int(position.x), y: Int(position.y), properties: properties)
-        return Self.make(Tilemap.Object(placed, definition: Self.definition(name), tileSize: tilemap?.tileSize ?? 16, frame: frameSize))
+        return Self.make(Tilemap.Object(placed, definition: Self.definition(name), tileSize: tilemap?.tileSize ?? 16, projection: projection, frame: frameSize))
     }
 
     /// `Assets/Objects/<name>.object`, read `once`; nil if it can't be, which the console says, once.
@@ -245,11 +249,21 @@ import Synchronization
     /// fog and its overhangs, lit by its light (`darkness` and the entities' `light`s, `clouds`, `vignette` and `gray`),
     /// then its `bloom`, its `bends` and its `effects`. What's drawn after it stays lit.
     open func draw(_ screen: Screen) {
-        for entity in entities {
-            entity.place(screen.alpha)
-            if entity.emitter != nil { entity.shown = screen.middle(of: entity) - entity.drawnAt } // where its particles come out
+        let isometric = projection == .isometric
+        for entity in entities { entity.place(screen.alpha) }
+        if isometric { // the walls of the room the followed entity's in, cut open
+            let inside = follow.flatMap { room(under: $0.footprintMiddle) }
+            for entity in entities { entity.cut = inside != nil && entity.object?.text("room") == inside }
         }
-        if let follow {
+        // In an isometric scene, how each stands, which also says where its sprite is drawn, so it's worked out first.
+        let stood = isometric ? isometricOrder(screen) : nil
+        let order = stood?.entities ?? drawOrder, keys = stood?.keys ?? (ySort ? order.map(\.sortY) : nil)
+        for entity in entities where entity.emitter != nil { // where its particles come out
+            entity.shown = (isometric ? entity.pictureMiddle(screen) : screen.middle(of: entity)) - entity.drawnAt
+        }
+        if let follow, isometric, let map = tilemap {
+            camera = Self.camera(following: follow.pictureMiddle(screen), view: screen.size, map: map.picture)
+        } else if let follow {
             let middle = follow.drawnAt + [Double(follow.hitbox.x + follow.hitbox.width / 2), Double(follow.hitbox.y + follow.hitbox.height / 2)]
             camera = Self.camera(following: middle, view: screen.size, map: tilemap?.size)
         }
@@ -263,33 +277,46 @@ import Synchronization
                 return Shine(middle: lamp.position + light.offset, radius: light.radius(seed: 2000 + i), light: light)
             }
         } ?? []
-        screen.light(self, entities.compactMap { entity in
-            entity.light.map { Shine(middle: screen.middle(of: entity) + $0.offset, radius: $0.radius(seed: entity.number), light: $0) }
+        let shines = entities.compactMap { entity in
+            let middle = isometric ? entity.footprintMiddle : screen.middle(of: entity) // an isometric scene's lights lie on its floor
+            return entity.light.map { Shine(middle: middle + $0.offset, radius: $0.radius(seed: entity.number), light: $0) }
         } + lamps.enumerated().map { i, lamp in
             Shine(middle: lamp.position + lamp.light.offset, radius: lamp.light.radius(seed: 1000 + i), light: lamp.light)
-        } + tiles)
-        func lit(_ lighting: Screen.Lighting, standing entity: Entity? = nil) {
+        } + tiles
+        if isometric { // as the picture shows the floor, under what stands as far down as it reaches up from below the view
+            let tallest = Int((stood?.stands.map(\.height).max() ?? 0).rounded(.up))
+            let rise = (min(tallest, screen.size.height) + 31) / 32 * 32 // in steps, so the maps aren't made again as it changes
+            screen.light(self, shines.map { Shine(middle: projection.picture(of: $0.middle), radius: $0.radius, light: $0.light) }, below: rise)
+        } else {
+            screen.light(self, shines)
+        }
+        func lit(_ lighting: Screen.Lighting, standing entity: Entity? = nil, at place: Int = 0) {
             screen.lighting = screen.lit ? lighting : .none
-            if let entity { screen.feet = entity.drawnAt + [Double(entity.hitbox.x) + Double(entity.hitbox.width) / 2, Double(entity.hitbox.y + entity.hitbox.height) - 0.5] }
+            if let stands = stood?.stands, entity != nil {
+                let s = stands[place]
+                screen.stand = SIMD4(Float(s.footprint.z), Float(s.footprint.w), Float(s.height), 0)
+            } else if let entity {
+                screen.feet = entity.drawnAt + [Double(entity.hitbox.x) + Double(entity.hitbox.width) / 2, Double(entity.hitbox.y + entity.hitbox.height) - 0.5]
+            }
         }
         lit(.daylight)
         for backdrop in backdrops { screen.draw(backdrop) }
         lit(.pixel)
         if let tilemap { screen.draw(tilemap, layers: tilemap.layers.indices.filter { !tilemap.above.contains($0) }) }
-        let order = drawOrder, standing: Screen.Lighting = ySort ? .standing : .pixel
+        let standing: Screen.Lighting = isometric ? .raised : ySort ? .standing : .pixel
         let blown = drift - (weather?.wind ?? .zero) * (1 - screen.alpha) * Loop.step // between updates, as the time is
-        let laid = screen.lay(particles, weather: weather, drift: blown, among: order, ySort: ySort)
+        let laid = screen.lay(particles, weather: weather, drift: blown, among: order, keys: keys)
         screen.draw(laid, at: 0) // on the ground
         for (i, entity) in order.enumerated() {
             screen.draw(laid, at: 1 + i) // standing behind it
-            lit(standing, standing: entity)
+            lit(standing, standing: entity, at: i)
             entity.draw(screen)
         }
         screen.draw(laid, at: 1 + order.count) // standing in front of every entity
         lit(.open)
         if let tilemap, !tilemap.above.isEmpty { screen.draw(tilemap, layers: tilemap.above.sorted()) }
-        for entity in order {
-            lit(standing, standing: entity)
+        for (i, entity) in order.enumerated() {
+            lit(standing, standing: entity, at: i)
             entity.draw(screen, above: true)
         }
         screen.draw(laid, at: 2 + order.count) // in the air
@@ -303,6 +330,17 @@ import Synchronization
         (screen.offset, screen.shaping) = (.zero, [])
     }
 
+    /// The order an isometric scene's entities draw in, each after those behind it that it overlaps in the picture, and
+    /// where its particles standing draw among them: after each entity whose footprint's middle is further up the
+    /// picture than they are, or one before it in the order.
+    func isometricOrder(_ screen: Screen) -> (entities: [Entity], keys: [Double], stands: [Standing]) {
+        let standing = entities.map { $0.standing { image in screen.frame(image) } }
+        let order = Spellcrest.isometricOrder(standing)
+        var keys = order.map { standing[$0].nearness / 2 } // the picture's y at each footprint's middle
+        for i in keys.indices.dropFirst() { keys[i] = max(keys[i], keys[i - 1]) } // never back up, for particles to find their place
+        return (order.map { entities[$0] }, keys, order.map { standing[$0] })
+    }
+
     /// The order the entities draw in: as they were added, or with `ySort` by `sortY`, ties as they were added.
     var drawOrder: [Entity] {
         guard ySort else { return entities }
@@ -312,11 +350,16 @@ import Synchronization
     /// The camera that puts `middle` in the middle of a `view`, kept inside a `map` of that size, or in the middle of a
     /// map smaller than the view. Between pixels as the entity it follows is, so the two move together.
     nonisolated static func camera(following middle: Vector, view: Size, map: Size?) -> Vector {
-        func axis(_ middle: Double, _ view: Int, _ map: Int?) -> Double {
-            guard let map else { return middle - Double(view / 2) }
-            return map < view ? Double((map - view) / 2) : min(max(middle - Double(view / 2), 0), Double(map - view))
+        camera(following: middle, view: view, map: map.map { Rect(x: 0, y: 0, width: $0.width, height: $0.height) })
+    }
+
+    /// The same, for a map that covers `map` of the picture, as an isometric one does, from left of 0.
+    nonisolated static func camera(following middle: Vector, view: Size, map: Rect?) -> Vector {
+        func axis(_ middle: Double, _ view: Int, _ start: Int?, _ map: Int?) -> Double {
+            guard let start, let map else { return middle - Double(view / 2) }
+            return Double(start) + (map < view ? Double((map - view) / 2) : min(max(middle - Double(start) - Double(view / 2), 0), Double(map - view)))
         }
-        return [axis(middle.x, view.width, map?.width), axis(middle.y, view.height, map?.height)]
+        return [axis(middle.x, view.width, map?.x, map?.width), axis(middle.y, view.height, map?.y, map?.height)]
     }
 }
 
@@ -409,11 +452,12 @@ struct Change {
 
 /// Anything that lives in a scene: the player, enemies, pickups.
 @MainActor open class Entity {
-    /// Top-left corner, in world pixels.
+    /// Top-left corner, in world pixels. In an isometric scene, a point on the floor, which its hitbox is from.
     public var position = Vector.zero
     /// Pixels per second, applied by `move(_:)`.
     public var velocity = Vector.zero
-    /// The solid part of the entity, relative to `position`.
+    /// The solid part of the entity, relative to `position`. In an isometric scene, its footprint on the floor, which its
+    /// sprite stands on (`spriteAt`).
     public var hitbox = Rect(x: 0, y: 0, width: 16, height: 16)
     /// What it looks like, drawn at `drawnAt`; nil draws nothing.
     public var sprite: Sprite?
@@ -449,6 +493,8 @@ struct Change {
     var number = 0 // its place among what its scene has added, which sets its light's flicker apart, the same each run
     var emitted = 0.0 // the part of a particle its emitter has put out but not yet let go
     var shown: Vector? // from `drawnAt` to its middle, as the scene last drew it
+    var pictured: Vector? // where its sprite was drawn in an isometric picture this frame (`spriteAt`)
+    var cut = false // a wall of the room the scene's followed entity is in, drawn cut (`drawnSprite`)
 
     /// From its position to its middle, where its emitter's particles come out: as it was last drawn, or before that,
     /// its sprite's frame's middle, or its hitbox's without one.
@@ -506,23 +552,26 @@ struct Change {
     open func update(_ dt: Double) {}
 
     /// Draws the sprite and the parts that aren't above. Override it to draw more, in world pixels, and call super to
-    /// keep them.
+    /// keep them; in an isometric scene, in the picture's pixels, from `spriteAt`.
     open func draw(_ screen: Screen) {
-        if let sprite { screen.draw(sprite, x: drawnAt.x, y: drawnAt.y) }
+        if let sprite = drawnSprite { screen.draw(sprite, x: spriteAt.x, y: spriteAt.y) }
         draw(screen, above: false)
     }
 
     /// Draws the parts that are, or aren't, above: the scene draws those above after the rest.
     func draw(_ screen: Screen, above: Bool) {
+        let corner = spriteAt
         for part in parts where part.above == above {
-            screen.draw(part.sprite, x: drawnAt.x + part.offset.x, y: drawnAt.y + part.offset.y)
+            screen.draw(part.sprite, x: corner.x + part.offset.x, y: corner.y + part.offset.y)
         }
     }
 
     /// Where it draws when the scene's `ySort` is on, in world pixels: the bottom of its hitbox, its feet, so the
     /// hitbox of a tree is its trunk. Override it for something always under the rest, like a shadow (`-.infinity`),
     /// or over it, like a bird.
-    open var sortY: Double { Double(box(at: position).y + hitbox.height) }
+    /// In an isometric scene, where particles go among what stands there: as far down the picture as its footprint's
+    /// middle is on the floor, what `particles.burst(_:at:count:angle:sortY:)` takes to draw sparks in front of it.
+    open var sortY: Double { scene?.projection == .isometric ? pictureDepth : Double(box(at: position).y + hitbox.height) }
 
     /// Moves by `velocity * dt` one pixel at a time, stopping flush against solid tiles and solid entities (but not
     /// those it already overlaps, so two that start on top of each other can walk apart), or with `cornerSlide` sliding
@@ -691,6 +740,10 @@ public struct Sprite: Sendable {
     /// One of the game's color shaders, from `Assets/Shaders`, that each of its pixels goes through: a shimmer, a pulse,
     /// a dissolve. It draws plain until the shader has compiled, and if it doesn't.
     public var shader: Shader?
+    /// The way it faces in the picture, which picks the animation it plays: playing "walk" facing south-east plays
+    /// "walk-se" if its `.json` has one, else "walk-sw" mirrored, else "walk". People in an isometric game face eight
+    /// ways, five drawn and the three facing west mirrored. Nil, the default, plays the animation as it's named.
+    public var facing: Direction?
     var time = 0.0
 
     /// A sprite of one of the game's images: `Sprite(.slime)`.
@@ -702,6 +755,12 @@ public struct Sprite: Sendable {
     /// Starts the named animation. Playing the one that's already running keeps it going, so it's fine every frame.
     public mutating func play(_ animation: String) {
         if animation != self.animation { (self.animation, time) = (animation, 0) }
+    }
+
+    /// Faces the way `way` goes across the picture, the nearest of eight; for none, it faces as it did. An entity
+    /// walking on an isometric floor faces the way its velocity goes there: `face(scene.projection.picture(of: velocity))`.
+    public mutating func face(_ way: Vector) {
+        if way != .zero { facing = Direction(way) }
     }
 }
 
@@ -735,6 +794,10 @@ public struct Tilemap: Sendable {
     var sheet: SheetFile?
     /// Things placed in the level with the map editor's Objects tool, like coins or where the player starts.
     public var objects: [Object] = []
+    /// How it's drawn, from its file: flat, as it lies, or isometric, its cells diamonds twice as wide as tall, its tiles
+    /// the floor, drawn before what stands on it, and its entities standing on their hitboxes, their footprints. Set it
+    /// on a map made from text.
+    public var projection: Projection = .flat
     /// The lights its tiles give by their tileset's properties, each at its tile's middle: `light`, how far it reaches in
     /// pixels, which lights it, and `lightColor`, `lightFlicker`, `lightBrightness` and `lightShadows`, as a `Light`'s,
     /// set in the map editor's tile panel. A torch painted on a wall lights it. The scene lights them as its `lamps`.
@@ -778,8 +841,9 @@ public struct Tilemap: Sendable {
         /// like doors: `player.overlaps(door.box)`.
         public var box: Rect { Rect(x: Int(position.x), y: Int(position.y), width: size.width, height: size.height) }
 
-        init(_ placed: TilemapFile.Object, definition: ObjectFile?, tileSize: Int, frame: (String) -> Size?) {
-            let size = placed.size(definition, tileSize: tileSize) { frame($0).map { ($0.width, $0.height) } }
+        init(_ placed: TilemapFile.Object, definition: ObjectFile?, tileSize: Int, projection: Projection = .flat, frame: (String) -> Size?) {
+            // In an isometric map, a sprite stands on its object's footprint, so its frame isn't the object's size.
+            let size = placed.size(definition, tileSize: tileSize) { projection == .isometric ? nil : frame($0).map { ($0.width, $0.height) } }
             (name, position, properties) = (placed.name, [Double(placed.x), Double(placed.y)], placed.properties(definition))
             func playing(_ image: String, _ animation: String?) -> Sprite {
                 var sprite = Sprite(image)
@@ -825,7 +889,9 @@ public struct Tilemap: Sendable {
     mutating func load(_ name: String) throws {
         let map = try TilemapFile(contentsOf: assetURL("\(name).tilemap"))
         let sheet = try SheetFile(contentsOf: assetURL("\(map.tileset).json"))
-        (tileset, tileSize, width, height) = (map.tileset, sheet.frameWidth, map.width, map.height)
+        projection = map.projection == .isometric ? .isometric : .flat
+        let cell = projection == .isometric ? max(sheet.frameWidth / 2, 1) : sheet.frameWidth // a diamond is twice as wide as its cell
+        (tileset, tileSize, width, height) = (map.tileset, cell, map.width, map.height)
         layers = map.layers.map { $0.tiles.map { $0 < 0 ? nil : $0 } }
         names = map.layers.map(\.name)
         above = Set(map.layers.indices.filter { map.layers[$0].above == true })
@@ -840,7 +906,7 @@ public struct Tilemap: Sendable {
         }
         var frames: [String: Size?] = [:] // each image's frame size, read once
         objects = (map.objects ?? []).map { placed in
-            Object(placed, definition: definitions[placed.name], tileSize: tileSize) { image in
+            Object(placed, definition: definitions[placed.name], tileSize: tileSize, projection: projection) { image in
                 if frames[image] == nil { frames[image] = .some(frameSize(image)) }
                 return frames[image]!
             }
@@ -886,8 +952,15 @@ public struct Tilemap: Sendable {
         findLamps()
     }
 
-    /// Size in pixels.
+    /// Size in pixels: on the floor, for an isometric map.
     public var size: Size { Size(width * tileSize, height * tileSize) }
+
+    /// The part of its scene's picture it covers: its size for a flat map; for an isometric one its diamond's box, from
+    /// its last row's left corner to its last column's right one, and from its first cell's top to its last's bottom.
+    var picture: Rect {
+        guard projection == .isometric else { return Rect(x: 0, y: 0, width: size.width, height: size.height) }
+        return Rect(x: -height * tileSize, y: 0, width: (width + height) * tileSize, height: (width + height) * tileSize / 2)
+    }
 
     /// The number of the layer the map editor named `name`, for `tile(at:layer:)` and the rest: so a game finds its
     /// paths' layer however many are added under it. Nil when there's none, as in a map made in code.

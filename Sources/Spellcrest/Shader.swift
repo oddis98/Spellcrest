@@ -172,7 +172,7 @@ func shaderSource(_ text: String, name: String, path: String, kind: ShaderKind) 
             + "float4 c = t.sample(nearest, in.uv) * in.color; Values v = values; "
             + "float4 s = float4(\(name)(in.uv * float2(t.get_width(), t.get_height()) - in.more.zw, half4(c), v)); "
             + "float3 rgb = mix(s.rgb, float3(1), saturate(in.effects.x)); if (in.effects.w > 0.5) return float4(rgb * s.a, s.a); "
-            + "return float4(lit(rgb, in.effects.z, in.shade, in.position.xy, view, shadowed, open, clouds), s.a); }"
+            + "return float4(lit(rgb, in.effects.z, in.shade, in.position.xy, view, shadowed, open, clouds, in.stand), s.a); }"
     case .layer:
         "fragment float4 spellcrestLayer(Vertex in [[stage_in]], texture2d<float> picture [[texture(0)]], constant View &view [[buffer(0)]], "
             + "constant Values &values [[buffer(1)]]) { Values v = values; Layer layer = { picture, view.scale }; "

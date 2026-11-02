@@ -124,7 +124,7 @@ func png(width: Int, height: Int, to file: URL) throws {
     func tiles(at camera: Vector) -> Int {
         (screen.offset, screen.vertices) = (camera, [])
         screen.draw(map)
-        return screen.vertices.count / 24 // six corners, four values each
+        return screen.vertices.count / 30 // six corners, five values each
     }
     #expect(tiles(at: [0, 0]) == 4)
     #expect(tiles(at: [12, 4]) == 9) // between tiles: 3 columns and 3 rows show a part

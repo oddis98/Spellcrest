@@ -19,7 +19,8 @@ public struct Shaping: OptionSet, Sendable {
 /// A light where there's no entity (`Scene.lamps`): a torch on a wall, a lantern on a post, a flash where a spell
 /// lands. Tiles can give them too, by their tileset's properties (`Tilemap.lamps`).
 public struct Lamp: Sendable {
-    /// Where it is, in world pixels: its light shines from there, moved by its `offset`.
+    /// Where it is, in world pixels: its light shines from there, moved by its `offset`. In an isometric scene, a point on
+    /// the floor, where its light lies.
     public var position: Vector
     /// Its light.
     public var light: Light

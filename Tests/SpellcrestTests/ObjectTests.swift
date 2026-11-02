@@ -184,7 +184,7 @@ extension ObjectName { static let door = ObjectName("door") }
     #expect(drawn { screen.draw(.dot, x: 1, y: 2) } == drawn { screen.draw("dot", x: 1, y: 2) })
     #expect(drawn { screen.panel(.dot, in: box) } == drawn { screen.panel("dot", in: box) })
     let text = drawn { screen.text("A A", x: 0, y: 0, width: 2, font: .tiny) }
-    #expect(text.count == 48 && text == drawn { screen.text("A A", x: 0, y: 0, width: 2, font: "tiny") })
+    #expect(text.count == 60 && text == drawn { screen.text("A A", x: 0, y: 0, width: 2, font: "tiny") })
     #expect(screen.textSize("A A", font: .tiny) == screen.textSize("A A", font: "tiny") && screen.wrap("A A", width: 2, font: .tiny) == "A\nA")
 }
 
@@ -237,7 +237,7 @@ extension ObjectName { static let door = ObjectName("door") }
     let screen = Screen(size: Size(32, 32), device: device, format: .bgra8Unorm)
     (screen.textures["dot"], screen.sheets["dot"]) = (device.makeTexture(descriptor: .texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 3, height: 3, mipmapped: false)), .some(nil))
     scene.draw(screen)
-    let corners = stride(from: 0, to: screen.vertices.count, by: 24).map { [screen.vertices[$0][0], screen.vertices[$0][1]] } // each quad's first corner
+    let corners = stride(from: 0, to: screen.vertices.count, by: 30).map { [screen.vertices[$0][0], screen.vertices[$0][1]] } // each quad's first corner
     #expect(corners == [[10, 10], [10, 7], [20, 11], [11, 4]]) // the tree and its part by depth, the player in front, the crown over all
 }
 

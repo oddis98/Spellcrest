@@ -69,7 +69,7 @@ import Synchronization
     var drawing: MTLRenderPipelineState? // the pipeline `open` draws with, which particles' draws set too
     /// The pass's encoder, begun now if it hasn't been: a pass begun but never drawn in still clears.
     var encoder: MTLRenderCommandEncoder { open ?? opened() }
-    // Queued quads, all with `batch`'s texture, pipeline and values, four for each corner: x, y, u, v; the tint r, g, b,
+    // Queued quads, all with `batch`'s texture, pipeline and values, five for each corner: x, y, u, v; the tint r, g, b,
     // a; and what the fragments make of it (`Corner` in the shaders).
     var vertices: [SIMD4<Float>] = []
     var batch: (texture: MTLTexture, state: MTLRenderPipelineState, values: [Float]?, normals: MTLTexture?)?
@@ -94,6 +94,9 @@ import Synchronization
     /// How what's drawn now is lit by the scene's light maps, and where it stands, for `.standing`, in world pixels.
     var lighting = Lighting.none
     var feet = Vector.zero
+    /// Where what's drawn now stands in an isometric picture, for `.raised`: its footprint's front edges, x1 and y1, and
+    /// its height, in world pixels.
+    var stand = SIMD4<Float>.zero
     /// Whether the scene being drawn has light maps this frame (`light`), and the `View` the shaders read.
     var lit = false
     var view: [Float] = []
@@ -176,9 +179,15 @@ import Synchronization
     /// added to what's under it if it `glows`, and through its `shader` once that's compiled.
     public func draw(_ sprite: Sprite, x: Double, y: Double, scale: Int = 1) {
         let texture = texture(sprite.image)
-        var frame = 0
+        var frame = 0, flipped = sprite.flipped
         if let name = sprite.animation {
-            if let shown = sheet(sprite.image)?.animations?[name]?.frame(at: sprite.time) {
+            let animations = sheet(sprite.image)?.animations
+            var playing = name // or, facing a way, the animation for it, or for the way it mirrors
+            if let facing = sprite.facing, let animations {
+                if animations["\(name)-\(facing.rawValue)"] != nil { playing = "\(name)-\(facing.rawValue)" }
+                else if animations["\(name)-\(facing.mirrored.rawValue)"] != nil { (playing, flipped) = ("\(name)-\(facing.mirrored.rawValue)", !flipped) }
+            }
+            if let shown = animations?[playing]?.frame(at: sprite.time) {
                 frame = shown
             } else if warned.insert("\(sprite.image) \(name)").inserted {
                 print("Spellcrest: \(sprite.image).json has no animation \"\(name)\"")
@@ -192,7 +201,7 @@ import Synchronization
         // Lit and shaping its light: turned toward it by its normal map if it has one, or else by a rim on its edges.
         let shaped = !shaping.isEmpty && lighting != .none && !sprite.glows && sprite.shader == nil
         let normals = shaped && shaping.contains(.normals) ? normalMap(sprite.image) : nil, rim = shaped && normals == nil && shaping.contains(.rim)
-        quad(texture, x: x, y: y, source: source, size: Size(source.width * scale, source.height * scale), flip: sprite.flipped,
+        quad(texture, x: x, y: y, source: source, size: Size(source.width * scale, source.height * scale), flip: flipped,
              color: sprite.color, opacity: sprite.opacity, flash: sprite.flash, glows: sprite.glows, state: state, values: values,
              frame: rim ? [Float(source.width), Float(source.height)] : [Float(source.x), Float(source.y)], normals: normals, rim: rim)
     }
@@ -214,6 +223,7 @@ import Synchronization
         let normals = shaping.contains(.normals) && lighting != .none ? normalMap(map.tileset) : nil // its tileset's, when it shapes its light
         let tile = Size(map.tileSize, map.tileSize)
         let frames = map.frames(sheet(map.tileset)?.animations)
+        guard map.projection == .flat else { return drawIsometric(map, layers: layers ?? Array(map.layers.indices), texture: texture, frames: frames, normals: normals) }
         // The world pixels the canvas shows any of, the camera on them or between them.
         let (left, top) = (Int(offset.x.rounded(.down)), Int(offset.y.rounded(.down)))
         let (right, bottom) = (Int((offset.x + Double(size.width)).rounded(.up)) - 1, Int((offset.y + Double(size.height)).rounded(.up)) - 1)
@@ -226,6 +236,22 @@ import Synchronization
                     quad(texture, x: Double(column * map.tileSize), y: Double(row * map.tileSize), source: region(frames[cell] ?? cell, tile, in: texture),
                          normals: normals)
                 }
+            }
+        }
+    }
+
+    /// Draws an isometric map's layers as the floor: each cell's tile a frame of its tileset, twice as wide as the cell,
+    /// its bottom on the bottom of the cell's diamond, so a frame taller than the diamond reaches up above it. Cells go
+    /// from the back of the view to its front, only those whose frames show any of it.
+    func drawIsometric(_ map: Tilemap, layers: [Int], texture: MTLTexture, frames: [Int: Int], normals: MTLTexture?) {
+        let cell = Double(map.tileSize)
+        let frame = sheet(map.tileset).map { Size($0.frameWidth, $0.frameHeight) } ?? Size(map.tileSize * 2, map.tileSize)
+        let cells = map.isometricCells(left: offset.x, top: offset.y, right: offset.x + Double(size.width), bottom: offset.y + Double(size.height), frame: frame)
+        for layer in layers where map.layers.indices.contains(layer) {
+            for (column, row) in cells {
+                guard let tile = map.layers[layer][row * map.width + column] else { continue }
+                quad(texture, x: Double(column - row) * cell - Double(frame.width) / 2, y: Double(column + row + 2) * cell / 2 - Double(frame.height),
+                     source: region(frames[tile] ?? tile, frame, in: texture), normals: normals)
             }
         }
     }
@@ -368,23 +394,34 @@ import Synchronization
         let lit = lighting != .none && !glows, shape: Float = glows ? 1 : !lit ? 0 : normals != nil ? 2 : rim ? 3 : 0 // how it's drawn
         queue(texture, [x0, y0, x1, y1], uv: [u0, v0, u1, v1], color: tint(color, opacity),
               effects: [Float(flash), Float(keep), lighting.rawValue, shape], more: [Float(feet.x), Float(feet.y), frame.x, frame.y],
-              state: state, values: values, normals: lit ? normals : nil)
+              stand: lighting == .raised ? stand : .zero, state: state, values: values, normals: lit ? normals : nil)
     }
 
     /// Queues a quad over `box`, from x0, y0 to x1, y1 in the pass's units, its texture coordinates `uv` the same way, and
     /// the rest of its corners as given. Consecutive quads with the same texture, pipeline and values reach the GPU as
     /// one draw call.
     func queue(_ texture: MTLTexture, _ box: SIMD4<Float>, uv: SIMD4<Float> = [0, 0, 1, 1], color: SIMD4<Float> = [1, 1, 1, 1],
-               effects: SIMD4<Float> = [0, 1, 0, 0], more: SIMD4<Float> = .zero, state: MTLRenderPipelineState? = nil, values: [Float]? = nil,
-               normals: MTLTexture? = nil) {
+               effects: SIMD4<Float> = [0, 1, 0, 0], more: SIMD4<Float> = .zero, stand: SIMD4<Float> = .zero, state: MTLRenderPipelineState? = nil,
+               values: [Float]? = nil, normals: MTLTexture? = nil) {
+        let (x0, y0, x1, y1) = (box[0], box[1], box[2], box[3])
+        queue(texture, corners: [[x0, y0], [x1, y0], [x0, y1], [x1, y1]], uv: uv, color: color, effects: effects, more: more, stand: stand, state: state,
+              values: values, normals: normals)
+    }
+
+    /// Queues a quad with its corners anywhere, top left, top right, bottom left and bottom right, as `queue(_:_:)` does
+    /// one over a box: a diamond on an isometric floor.
+    func queue(_ texture: MTLTexture, corners c: [SIMD2<Float>], uv: SIMD4<Float> = [0, 0, 1, 1], color: SIMD4<Float> = [1, 1, 1, 1],
+               effects: SIMD4<Float> = [0, 1, 0, 0], more: SIMD4<Float> = .zero, stand: SIMD4<Float> = .zero, state: MTLRenderPipelineState? = nil,
+               values: [Float]? = nil, normals: MTLTexture? = nil) {
         let state = state ?? current?.usual ?? pipeline
         if texture !== batch?.texture || state !== batch?.state || values != batch?.values || normals !== batch?.normals {
             flush()
             batch = (texture, state, values, normals)
         }
-        let (x0, y0, x1, y1, u0, v0, u1, v1) = (box[0], box[1], box[2], box[3], uv[0], uv[1], uv[2], uv[3])
-        for corner in [[x0, y0, u0, v0], [x1, y0, u1, v0], [x0, y1, u0, v1], [x1, y0, u1, v0], [x1, y1, u1, v1], [x0, y1, u0, v1]] as [SIMD4<Float>] {
-            vertices += [corner, color, effects, more]
+        let (u0, v0, u1, v1) = (uv[0], uv[1], uv[2], uv[3])
+        for corner in [[c[0].x, c[0].y, u0, v0], [c[1].x, c[1].y, u1, v0], [c[2].x, c[2].y, u0, v1], [c[1].x, c[1].y, u1, v0], [c[3].x, c[3].y, u1, v1],
+                       [c[2].x, c[2].y, u0, v1]] as [SIMD4<Float>] {
+            vertices += [corner, color, effects, more, stand]
         }
     }
 
@@ -400,7 +437,7 @@ import Synchronization
             encoder.setFragmentTexture(batch.texture, index: 0)
             encoder.setFragmentTexture(batch.normals ?? white, index: 5) // its normal map, for light that shapes it
             if let values = batch.values { encoder.setFragmentBytes(values, length: values.count * MemoryLayout<Float>.stride, index: 1) }
-            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: vertices.count / 4)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: vertices.count / 5)
         }
         vertices.removeAll(keepingCapacity: true)
         batch = nil
@@ -474,6 +511,9 @@ import Synchronization
         case standing = 3
         /// By daylight alone, the ambient and the clouds: backdrops and overhangs.
         case daylight = 4
+        /// By the light on the floor under each of its pixels, where the view's ray through the pixel meets its box
+        /// (`stand`), less of it the further up that is: what stands in an isometric scene.
+        case raised = 5
     }
 
     /// A render pass quads go to: its descriptor, the pipeline they draw with unless they say, the grid their corners land
@@ -568,12 +608,14 @@ using namespace metal;
 struct Vertex {
     float4 position [[position]]; float2 uv; float4 color [[flat]]; float4 effects [[flat]]; float4 more [[flat]];
     float3 shade [[flat]]; // for a standing quad, the share of the light at its feet that gets through the shadows (litVertex)
+    float4 stand [[flat]]; // for one standing in an isometric picture, its footprint's front edges and its height (Screen.stand)
 };
 
 // As Screen.queue writes them: x, y in the pass's pixels (y down) and u, v texture coords; the color to multiply by;
 // then what the fragments make of it: for a sprite, how far to mix toward white (a flash), how much of a dissolve's
-// pattern to keep, how it's lit and whether it glows; and its feet in world pixels and its frame's place in the texture.
-struct Corner { float4 xyuv; float4 color; float4 effects; float4 more; };
+// pattern to keep, how it's lit and whether it glows; its feet in world pixels and its frame's place in the texture; and
+// in an isometric picture, where it stands.
+struct Corner { float4 xyuv; float4 color; float4 effects; float4 more; float4 stand; };
 
 // How the canvas lies over the world, and the light maps under it (Screen.view).
 struct View {
@@ -669,15 +711,44 @@ float3 shine(float3 rgb, float4 light) {
     return mix(rgb, float3(luma(rgb)), saturate(light.a));
 }
 
+// Where on an isometric floor a pixel standing at `world`, in the picture, is lit from: under the point where the view's
+// ray through it meets its box (`stand`: its footprint's front edges, x1 and y1, and its height), a world pixel out from
+// the face it meets, so each face is lit from its own side; and how far up that point is. The ray's points are the
+// floor's x + y = u, at x = (u + world.x) / 2, y = (u - world.x) / 2 and a height of u / 2 - world.y, and the box's
+// nearest is where u first meets a front face or its top, never under the floor.
+float3 underfoot(float2 world, float4 stand) {
+    float right = 2 * stand.x - world.x, left = 2 * stand.y + world.x, top = 2 * world.y + 2 * stand.z;
+    float u = max(min(min(right, left), top), 2 * world.y);
+    float2 under = float2(world.x, u / 2);
+    if (u > 2 * world.y && u < top) under += right <= left ? float2(1, 0.5) : float2(-1, 0.5);
+    return float3(under, u / 2 - world.y);
+}
+
+// How much of the light past the daylight reaches a pixel `height` pixels above an isometric floor: all of it at its
+// foot, half 64 pixels up, as a lamp lights a wall's foot more than its top.
+float fade(float height) { return 1 / (1 + max(height, 0.0) / 64); }
+
 // A canvas pixel's color as the scene's light maps light it, as `mode` says (Screen.Lighting): 0 not at all; 1 by its
 // pixel's light; 2 by its pixel's without shadows; 3 standing, by that times `shade`, the share of the light at its
-// feet that gets through the shadows; 4 by daylight alone. The shadowed map's alpha is how gray, the open one's the
+// feet that gets through the shadows; 4 by daylight alone; 5 raised, by the light on an isometric floor under it, what
+// lights it past the daylight fading as it rises (`stand`). The shadowed map's alpha is how gray, the open one's the
 // vignette. The clouds have a map of their own, so they can be soft while the light is sharp: the daylight they take,
 // the ambient darkened by the vignette times their shade, comes off the light here, and the cap at daylight left room
 // for it (`capFragment`).
+float3 raised(float3 rgb, float2 pixel, float4 stand, constant View &view, texture2d<float> shadowed, texture2d<float> open,
+              texture2d<float> clouds) {
+    float3 under = underfoot(pixel / view.scale + view.offset, stand);
+    float4 here = at(shadowed, under.xy, view);
+    float left = cloudy(clouds, under.xy, view);
+    float4 sky = at(open, under.xy, view);
+    float3 taken = view.ambient.rgb * sky.a * (1 - left), daylight = view.ambient.rgb * sky.a * left;
+    return shine(rgb, float4(mix(daylight, here.rgb - taken, fade(under.z)), here.a));
+}
+
 float3 lit(float3 rgb, float mode, float3 shade, float2 pixel, constant View &view, texture2d<float> shadowed, texture2d<float> open,
-           texture2d<float> clouds) {
+           texture2d<float> clouds, float4 stand = float4(0)) {
     if (mode < 0.5) return rgb;
+    if (mode > 4.5) return raised(rgb, pixel, stand, view, shadowed, open, clouds);
     float2 world = pixel / view.scale + view.offset;
     float4 here = at(shadowed, world, view);
     float left = cloudy(clouds, world, view);
@@ -690,7 +761,7 @@ float3 lit(float3 rgb, float mode, float3 shade, float2 pixel, constant View &vi
 
 Vertex corner(uint i, constant Corner *v, constant float2 &size) {
     float2 p = v[i].xyuv.xy / size * 2 - 1;
-    return { float4(p.x, -p.y, 0, 1), v[i].xyuv.zw, v[i].color, v[i].effects, v[i].more, float3(1) };
+    return { float4(p.x, -p.y, 0, 1), v[i].xyuv.zw, v[i].color, v[i].effects, v[i].more, float3(1), v[i].stand };
 }
 
 vertex Vertex spriteVertex(uint i [[vertex_id]], constant Corner *v [[buffer(0)]], constant float2 &size [[buffer(1)]]) { return corner(i, v, size); }
@@ -719,9 +790,11 @@ fragment float4 spriteFragment(Vertex in [[stage_in]], texture2d<float> t [[text
     constexpr sampler nearest(filter::nearest);
     float4 c = t.sample(nearest, in.uv) * in.color;
     float3 rgb = mix(c.rgb, float3(1), saturate(in.effects.x));
-    float3 out = lit(rgb, in.effects.z, in.shade, in.position.xy, view, shadowed, open, clouds);
+    float3 out = lit(rgb, in.effects.z, in.shade, in.position.xy, view, shadowed, open, clouds, in.stand);
     float flip = dfdx(in.uv.x) < 0 ? -1 : 1; // mirrored, its texture's left is the screen's right
-    if (in.effects.w > 1.5) out = shaped(out, in.effects.w < 2.5, in.uv, flip, in.more.zw, in.position.xy, t, normals, direction, view); // 2 normal map, 3 rim
+    float2 pixel = in.position.xy; // standing in an isometric picture, the way to the light is the floor's under it, as the pixel it's drawn at
+    if (in.effects.z > 4.5) pixel = (underfoot(pixel / view.scale + view.offset, in.stand).xy - view.offset) * view.scale;
+    if (in.effects.w > 1.5) out = shaped(out, in.effects.w < 2.5, in.uv, flip, in.more.zw, pixel, t, normals, direction, view); // 2 normal map, 3 rim
     return float4(out, c.a);
 }
 

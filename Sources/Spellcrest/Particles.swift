@@ -118,7 +118,8 @@ public struct Weather: Sendable, Equatable {
     /// Puts out `count` particles at `point`, in world pixels, as `emitter` says but for its `rate`, going `angle` instead
     /// of its own if you give one: sparks where a bolt lands, `particles.burst(sparks, at: hit, count: 30)`. Among the
     /// entities of a `ySort` scene, those standing draw as something standing at `point` would, or at `sortY` if you give
-    /// one: an entity's `sortY`, so sparks off something hit draw in front of it.
+    /// one: an entity's `sortY`, so sparks off something hit draw in front of it. In an isometric scene, particles are in
+    /// the picture, as its camera is: `point` is where they start there, and they fall down it.
     public func burst(_ emitter: Emitter, at point: Vector, count: Int, angle: Double? = nil, sortY: Double? = nil) {
         let room = min(count, Particles.most - x.count)
         guard room > 0 else { return }
@@ -259,7 +260,7 @@ extension Screen {
     /// on the ground first, then those standing, by the place among the `entities` (in the order they draw) of where
     /// they came out if the scene is `ySort`, then those in the air; and in each place, those lit before those that glow,
     /// each image's together. `drift` is how far the weather's wind has blown it.
-    func lay(_ particles: Particles, weather: Weather?, drift: Vector, among entities: [Entity], ySort: Bool) -> Laid {
+    func lay(_ particles: Particles, weather: Weather?, drift: Vector, among entities: [Entity], keys: [Double]?) -> Laid {
         let (splashes, falling) = weather.map { self.weather($0, drift: drift) } ?? ([], [])
         let catches = weather?.kind == .rain // rain adds the light it catches to what's under it
         let n = particles.count
@@ -287,8 +288,8 @@ extension Screen {
         let ranks = max(order.count, 1)
 
         // Where each in view draws, sorted by a count of each place and rank; those out of view are left out.
-        let standing = ySort && particles.kinds.contains { $0.depth == .standing }
-        let sortYs = standing ? entities.map(\.sortY) : []
+        // Those standing go among the entities by the entities' keys, their `sortY` in a `ySort` scene, or after them all.
+        let (standing, sortYs) = (keys != nil, keys ?? [])
         let (left, top) = (Float(offset.x.rounded(.down)), Float(offset.y.rounded(.down)))
         let (right, bottom) = (left + Float(size.width) + 1, top + Float(size.height) + 1)
         // Read once: in a debug build each read of the particles' arrays is checked, as they can change.
@@ -474,6 +475,7 @@ vertex Vertex particleVertex(uint i [[vertex_id]], uint n [[instance_id]], const
     out.effects = float4(0, 1, q.more.x, 0);
     out.more = float4(0);
     out.shade = float3(1);
+    out.stand = float4(0);
     return out;
 }
 

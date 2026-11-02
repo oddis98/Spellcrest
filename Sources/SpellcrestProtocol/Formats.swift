@@ -65,6 +65,14 @@ public struct TilemapFile: AssetFile, Equatable, Sendable {
     public var layers: [Layer]
     /// Things placed in the level, like coins or where the player starts.
     public var objects: [Object]?
+    /// How it's drawn; nil is flat. Isometric, its cells are diamonds twice as wide as tall, so its tiles are half as
+    /// wide as its tileset's frames, and its objects stand on their hitboxes.
+    public var projection: Projection?
+
+    /// How a map is drawn: as it lies, or seen from above at an angle.
+    public enum Projection: String, Codable, Sendable {
+        case flat, isometric
+    }
 
     public struct Layer: Codable, Equatable, Sendable {
         public var name: String
@@ -94,12 +102,13 @@ public struct TilemapFile: AssetFile, Equatable, Sendable {
         }
     }
 
-    public init(tileset: String, width: Int, height: Int, layers: [Layer], objects: [Object]? = nil) {
+    public init(tileset: String, width: Int, height: Int, layers: [Layer], objects: [Object]? = nil, projection: Projection? = nil) {
         self.tileset = tileset
         self.width = width
         self.height = height
         self.layers = layers
         self.objects = objects
+        self.projection = projection
     }
 }
 

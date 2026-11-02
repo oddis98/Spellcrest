@@ -16,7 +16,9 @@ public struct Light: Sendable {
     /// nothing; over 1 it lights past daylight, toward its own white, as a fireball or lightning does by day; under 0 it
     /// takes light away, as a gloom does.
     public var brightness: Double
-    /// Where it shines from, in pixels from the entity's middle: a lantern held out in front, a torch on a wall.
+    /// Where it shines from, in pixels from the entity's middle: a lantern held out in front, a torch on a wall. In an
+    /// isometric scene, on the floor from the middle of the entity's footprint, where its light lies: what stands is lit
+    /// by the floor under it, less of it the further up.
     public var offset: Vector
     /// How much of the world's color it drains around it, from 0 to 1, as much as it lights: a gloom's gray.
     public var gray: Double
@@ -93,10 +95,15 @@ public struct Fog: Sendable {
 }
 
 /// Where the light maps lie under a view whose top-left corner is at world pixel `view`: their first texel on the world
-/// pixel that corner is in, and a texel more each way than the `game`'s size, for a view between pixels.
-func lightMaps(under view: Vector, game: Size) -> (origin: Vector, size: Size) {
-    (view.rounded(.down), Size(game.width + 1, game.height + 1))
+/// pixel that corner is in, and a texel more each way than the `game`'s size, for a view between pixels, and `below`
+/// more down, for the floor under what stands below the view in an isometric picture and reaches up into it.
+func lightMaps(under view: Vector, game: Size, below: Int = 0) -> (origin: Vector, size: Size) {
+    (view.rounded(.down), Size(game.width + 1, game.height + 1 + below))
 }
+
+/// How far a light of `radius` reaches across and down the picture: as far both ways, or on an isometric floor, where
+/// its round glow is an ellipse twice as wide as tall, √2 times as far across and half that down.
+func reach(_ radius: Double, isometric: Bool) -> Vector { isometric ? [radius * 2.squareRoot(), radius / 2.squareRoot()] : [radius, radius] }
 
 /// A light as it shines in a frame: from where, in world pixels, how far, as it flickers, and the rest of it.
 struct Shine {
@@ -147,21 +154,22 @@ extension Screen {
     /// lights, then goes on with the canvas, the maps bound for every quad to read as `lighting` says. The maps have a
     /// texel for each world pixel the view shows, from `offset` rounded down, so they stay on the ground as the camera
     /// moves between pixels, and cost the same at any `scale`.
-    func light(_ scene: Scene, _ lights: [Shine]) {
+    func light(_ scene: Scene, _ lights: [Shine], below: Int = 0) {
         (lit, pastDaylight) = (false, nil)
         let dark = min(max(scene.darkness, 0), 1)
         let dim = dark > 0 || scene.clouds != nil // so a light up to daylight shows
-        let (origin, size) = lightMaps(under: offset, game: self.size)
+        let isometric = scene.projection == .isometric // its lights lie on the floor in the picture, and its standing things are lit from under them
+        let (origin, size) = lightMaps(under: offset, game: self.size, below: below)
         let shown = lights.filter { shine in
-            let (b, m, r) = (shine.light.brightness, shine.middle - origin, shine.radius)
-            return r > 0 && (dim || b > 1 || b < 0 || shine.light.gray > 0)
-                && m.x + r > 0 && m.y + r > 0 && m.x - r < Double(size.width) && m.y - r < Double(size.height)
+            let (b, m, r) = (shine.light.brightness, shine.middle - origin, reach(shine.radius, isometric: isometric))
+            return shine.radius > 0 && (dim || b > 1 || b < 0 || shine.light.gray > 0)
+                && m.x + r.x > 0 && m.y + r.y > 0 && m.x - r.x < Double(size.width) && m.y - r.y < Double(size.height)
         }
         if shown.isEmpty { shaping = [] } // no light to turn toward, as by day: nothing's shaped, and that costs nothing
         guard dim || scene.gray > 0 || scene.clouds != nil || scene.fog != nil || scene.vignette > 0 || !shown.isEmpty else { return }
         pastDaylight = shown.filter { $0.light.brightness > 1 }.reduce(nil) { box, shine in // in the view's pixels
-            let (m, r) = (shine.middle - offset, shine.radius)
-            let here = SIMD4<Float>(Float(m.x - r), Float(m.y - r), Float(m.x + r), Float(m.y + r))
+            let (m, r) = (shine.middle - offset, reach(shine.radius, isometric: isometric))
+            let here = SIMD4<Float>(Float(m.x - r.x), Float(m.y - r.y), Float(m.x + r.x), Float(m.y + r.y))
             guard let box else { return here }
             return [min(box.x, here.x), min(box.y, here.y), max(box.z, here.z), max(box.w, here.w)]
         }
@@ -177,8 +185,8 @@ extension Screen {
         // What's opaque, into the mask, as far around the view as the farthest shadowed light reaches.
         let shadowed = shown.filter(\.light.shadows)
         var margin = 0
-        if let reach = shadowed.map(\.radius).max() {
-            let mask = self.mask(size, margin: Int(reach.rounded(.up)) + 1)
+        if let farthest = shadowed.map({ reach($0.radius, isometric: isometric).x }).max() {
+            let mask = self.mask(size, margin: Int(farthest.rounded(.up)) + 1)
             margin = (mask.width - size.width) / 2
             let pass = MTLRenderPassDescriptor()
             pass.colorAttachments[0].texture = mask
@@ -187,10 +195,23 @@ extension Screen {
             go(Pass(descriptor: pass, usual: states.mask, size: Size(mask.width, mask.height)))
             let corner = origin - Double(margin) // the world pixel at the mask's first texel
             func opaque(_ box: Rect) {
-                let (x, y) = (Float(Double(box.x) - corner.x), Float(Double(box.y) - corner.y))
-                queue(white, [x, y, x + Float(box.width), y + Float(box.height)])
+                guard isometric else {
+                    let (x, y) = (Float(Double(box.x) - corner.x), Float(Double(box.y) - corner.y))
+                    return queue(white, [x, y, x + Float(box.width), y + Float(box.height)])
+                }
+                // On an isometric floor, its footprint as the picture shows it: a diamond, or for a long one a slanted box.
+                let (x0, y0, x1, y1) = (Double(box.x), Double(box.y), Double(box.x + box.width), Double(box.y + box.height))
+                queue(white, corners: [[x0, y0], [x1, y0], [x0, y1], [x1, y1]].map { (point: Vector) in
+                    let at = Projection.isometric.picture(of: point) - corner
+                    return SIMD2(Float(at.x), Float(at.y))
+                })
             }
-            if let map = scene.tilemap, !map.opaque.isEmpty {
+            if let map = scene.tilemap, !map.opaque.isEmpty, isometric {
+                for (column, row) in map.isometricCells(left: corner.x, top: corner.y, right: corner.x + Double(mask.width), bottom: corner.y + Double(mask.height))
+                where map.layers.contains(where: { $0[row * map.width + column].map(map.opaque.contains) ?? false }) {
+                    opaque(Rect(x: column * map.tileSize, y: row * map.tileSize, width: map.tileSize, height: map.tileSize))
+                }
+            } else if let map = scene.tilemap, !map.opaque.isEmpty {
                 let (left, top) = (Int(corner.x), Int(corner.y))
                 for row in stride(from: max(map.cell(top), 0), through: min(map.cell(top + mask.height - 1), map.height - 1), by: 1) {
                     for column in stride(from: max(map.cell(left), 0), through: min(map.cell(left + mask.width - 1), map.width - 1), by: 1)
@@ -235,11 +256,11 @@ extension Screen {
         go(Pass(descriptor: pass, usual: add, size: size, textures: [mask ?? white]))
         func glow(_ shine: Shine, _ much: Double, gray: Double, state: MTLRenderPipelineState? = nil) {
             let (m, r, light) = (shine.middle - origin, shine.radius, shine.light)
-            let color = tint(light.color) * Float(much)
+            let color = tint(light.color) * Float(much), far = reach(r, isometric: isometric)
             queue(light.image.map { texture($0.name) } ?? white,
-                  [Float((m.x - r).rounded(.down)), Float((m.y - r).rounded(.down)), Float((m.x + r).rounded(.up)), Float((m.y + r).rounded(.up))],
+                  [Float((m.x - far.x).rounded(.down)), Float((m.y - far.y).rounded(.down)), Float((m.x + far.x).rounded(.up)), Float((m.y + far.y).rounded(.up))],
                   color: [color.x, color.y, color.z, Float(min(max(gray, 0), 1))], effects: [Float(m.x), Float(m.y), Float(r), light.shadows ? 1 : 0],
-                  more: [Float(light.angle), light.image == nil ? 0 : 1, Float(margin), 0], state: state)
+                  more: [Float(light.angle), light.image == nil ? 0 : 1, Float(margin), isometric ? 1 : 0], state: state)
         }
         for shine in shown where shine.light.brightness > 0 { glow(shine, min(shine.light.brightness, 1), gray: shine.light.gray) }
         queue(scene.clouds == nil ? white : maps.clouds, whole, state: cap)
@@ -324,8 +345,11 @@ float through(texture2d<float> mask, float2 from, float2 to) {
 // A light, added to the maps or taken from them: its color times how much (color.rgb) and how gray (color.a), from its
 // middle (effects.xy) out to its radius (effects.z), round or shaped by an image (texture 0, if more.y) turned by an
 // angle (more.x); with shadows (effects.w), only where it gets through the mask (texture 1, more.z texels wider each way).
+// On an isometric floor (more.w), its maps are the floor as the picture shows it, so its radius is measured across the
+// floor, from the picture's way to it: x + y down and y - x up, each half.
 ShapedMaps light(Vertex in, texture2d<float> shape, texture2d<float> mask) {
-    float2 d = (in.position.xy - in.effects.xy) / in.effects.z;
+    float2 d = (in.position.xy - in.effects.xy) / in.effects.z, across = d; // across the picture, as normal maps are
+    if (in.more.w > 0.5) d = float2(d.y + d.x / 2, d.y - d.x / 2);
     float glow;
     if (in.more.y > 0.5) {
         float c = cos(in.more.x), s = sin(in.more.x);
@@ -341,7 +365,7 @@ ShapedMaps light(Vertex in, texture2d<float> shape, texture2d<float> mask) {
     float3 light = in.color.rgb * glow;
     // And the way to it, weighted by how much of it gets here, for a scene that shapes its light.
     float weight = max(light.r, max(light.g, light.b)) * seen;
-    float2 toward = length(d) > 0.0001 ? -normalize(d) : float2(0);
+    float2 toward = length(across) > 0.0001 ? -normalize(across) : float2(0);
     return { float4(light * seen, in.color.a * glow), float4(light, 0), float4(toward * weight, weight, 0) };
 }
 

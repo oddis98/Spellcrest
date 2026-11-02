@@ -35,7 +35,7 @@ public struct Bend: Sendable, Equatable {
 
     /// How it moves the picture.
     public var kind: Kind
-    /// Its middle, in world pixels.
+    /// Its middle, in world pixels; in an isometric scene, in the picture's pixels, as its camera is.
     public var middle: Vector
     /// How far from its middle it reaches, in pixels.
     public var radius: Double
