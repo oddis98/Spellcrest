@@ -63,6 +63,8 @@ struct TouchLayout {
 /// The iOS app around a game. UIKit makes one of these as the app's delegate, and another for its window's scene.
 final class GameApp: UIResponder, UIApplicationDelegate, UIWindowSceneDelegate {
     static var resolution = Size(320, 180)
+    /// The game, which `GameView` asks for its canvas for the display as it's laid out (`Game.resolution(for:)`).
+    static var game: (any Game)?
     var window: UIWindow?
 
     func application(_ application: UIApplication, configurationForConnecting session: UISceneSession,

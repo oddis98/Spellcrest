@@ -41,7 +41,7 @@ Then `swift run`. A window opens on a 320×180 canvas; press Space for a new col
 
 ## How a game works
 
-- **A game** is the `@main` type that conforms to `Game`. It gives the size of its canvas (`resolution`, 320×180 unless it says otherwise), which the window scales up by whole numbers so pixels stay square, and the `Scene` it starts in.
+- **A game** is the `@main` type that conforms to `Game`. It gives the size of its canvas (`resolution`, 320×180 unless it says otherwise), which the window scales up by whole numbers so pixels stay square, and the `Scene` it starts in. On an iPhone or iPad it can give a canvas for the screen as it's held (`resolution(for:)`, from its `Display`), asked again as it turns or a foldable opens, each scene then laying itself out again (`Scene.resized(from:)`) from `Input.canvas`.
 - **A scene** updates 60 times a second (`update(_:)`) and draws its tilemap, its entities and whatever else it draws on the `Screen` (`draw(_:)`), through a `camera` that can `follow` an entity. `Scene.transition(to:style:)` goes to the next scene with a fade, a wipe, an iris or a dissolve.
 - **Entities** are what moves: a position, a velocity, a hitbox and a `Sprite`. `move(dt)` moves one by its velocity, stopping it flush against solid tiles and other solid entities, and `path(to:)` finds a way around walls that `walk(_:along:speed:)` follows.
 - **Sprites** are PNGs, cut into frames and animations by a `.json` beside them: `Sprite("player")`, then `sprite.play("walk")`. They tint, fade, and `flash` white when hit.

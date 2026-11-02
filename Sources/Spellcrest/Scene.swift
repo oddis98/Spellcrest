@@ -108,6 +108,15 @@ import Synchronization
     /// The transition under way, if any.
     static var changing: Change?
 
+    /// Tells the scene, and those a transition is between, each once, that the canvas changed size from `old`.
+    static func resized(from old: Size) {
+        var told: [Scene] = []
+        for scene in [current, changing?.next, changing?.old].compactMap({ $0 }) where !told.contains(where: { $0 === scene }) {
+            scene.resized(from: old)
+            told.append(scene)
+        }
+    }
+
     /// One update of the game: the current scene's, unless it's standing still for a transition.
     static func tick(_ dt: Double) {
         for entity in current.entities { entity.before = entity.position + entity.remainder } // where `drawnAt` goes on from
@@ -225,6 +234,13 @@ import Synchronization
     }
 
     /// Runs 60 times a second. Call super to update the entities and put out their emitters' particles.
+    /// Called on an iPhone or iPad when the display the game is on changes, and as the game's view is first laid out: it
+    /// turned, a foldable opened, or the room the system needs, its safe area, moved; and the game gave the canvas for it
+    /// (`Game.resolution(for:)`). Lay out again what was placed for the old shape. `old` is the canvas's size before, the
+    /// same if only the room round it changed, and `Input.canvas` its size now. It does nothing unless the scene says
+    /// otherwise.
+    open func resized(from old: Size) {}
+
     open func update(_ dt: Double) {
         for entity in entities {
             entity.update(dt)

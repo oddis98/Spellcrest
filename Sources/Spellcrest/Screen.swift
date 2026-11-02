@@ -5,8 +5,9 @@ import Synchronization
 
 /// The pixel canvas your game draws on. (0, 0) is the top-left pixel.
 @MainActor public final class Screen {
-    /// The canvas's size in pixels, the game's `resolution`: for laying out a HUD.
-    public let size: Size
+    /// The canvas's size in pixels, the game's `resolution`, or what it asked for the display it's on
+    /// (`Game.resolution(for:)`): for laying out a HUD.
+    public private(set) var size: Size
     let device: MTLDevice
     let library: MTLLibrary // the engine's shaders
     let pipeline: MTLRenderPipelineState // sprites, blended by their alpha, lit as `lighting` says
@@ -149,6 +150,16 @@ import Synchronization
     func resize(to scale: Int) {
         guard scale != self.scale else { return }
         self.scale = scale
+        (canvasDescriptor.width, canvasDescriptor.height) = (size.width * scale, size.height * scale)
+        canvas = device.makeTexture(descriptor: canvasDescriptor)!
+        (lastFrame, other) = (nil, nil)
+    }
+
+    /// Makes the canvas `size` pixels from the next frame on, at its scale; the light maps, the bloom's and the mask follow
+    /// as they're next used.
+    func resize(canvas size: Size) {
+        guard size != self.size else { return }
+        self.size = size
         (canvasDescriptor.width, canvasDescriptor.height) = (size.width * scale, size.height * scale)
         canvas = device.makeTexture(descriptor: canvasDescriptor)!
         (lastFrame, other) = (nil, nil)

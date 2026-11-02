@@ -133,7 +133,9 @@ public enum Button: Sendable, CaseIterable {
     static var keysNow: Set<Key> = []
     static var keysBefore: Set<Key> = []
 
-    static var canvas = Size(320, 180) // the game's resolution, from its loop
+    /// The canvas's size now, in pixels, the room the pointer is in: the game's `resolution`, or what it asked for the
+    /// display it's on (`Game.resolution(for:)`), for laying out outside `draw`.
+    public internal(set) static var canvas = Size(320, 180)
     static var mouse: Vector? // the pointer as its last event left it
     static var down = false // held on the canvas, or dragged off it
     static var click: Vector? // where it went down, until an update sees it, so a click between two updates counts

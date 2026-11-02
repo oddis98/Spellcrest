@@ -74,6 +74,20 @@ import SpellcrestProtocol
         Input.poll()
         Scene.tick(Self.step)
     }
+
+    /// Makes the canvas `size` pixels, as the game asked for the display it's shown on (`Game.resolution(for:)`), and tells
+    /// the scene, and those a transition is between, to lay out again: the canvas changed, or only the room round it.
+    func resize(to size: Size) {
+        let old = screen.size
+        if size != old, size.width > 0, size.height > 0 {
+            screen.resize(canvas: size)
+            Input.canvas = size
+            #if os(iOS)
+            GameApp.resolution = size
+            #endif
+        }
+        Scene.resized(from: old)
+    }
 }
 
 /// How many of the game's 60 Hz updates a frame runs, from the time since the last frame. On a 60 Hz display, one for
@@ -125,6 +139,9 @@ final class GameView: MTKView {
     private var other = 0 // frames in a row at the other link's rate, as when Low Power Mode starts or stops
     #endif
     private var shows: Double? // when the frame being drawn will be on the screen, from `link` or `metalLink`
+    #if os(iOS)
+    private var shown: Display? // the display as the game last heard of it
+    #endif
 
     init(resolution: Size) {
         let device = MTLCreateSystemDefaultDevice()!
@@ -201,6 +218,25 @@ final class GameView: MTKView {
     override func layoutSubviews() {
         super.layoutSubviews()
         (layer as! CAMetalLayer).drawableSize = drawableSize
+        fitCanvas()
+    }
+
+    override func safeAreaInsetsDidChange() {
+        super.safeAreaInsetsDidChange()
+        fitCanvas()
+    }
+
+    /// The canvas the game asks for the display as it is now, its bounds and safe area (`Game.resolution(for:)`): as the
+    /// view is first laid out, which is the first time iOS says how the game is held and what room it leaves, and again
+    /// whenever either changes, as it turns, a foldable opens or the safe area moves, which iOS may say a moment after the
+    /// bounds. The scene hears of each (`Scene.resized(from:)`).
+    private func fitCanvas() {
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        let insets = safeAreaInsets
+        let display = Display(width: bounds.width, height: bounds.height, top: insets.top, left: insets.left, bottom: insets.bottom, right: insets.right)
+        guard display != shown else { return }
+        shown = display
+        loop.resize(to: GameApp.game?.resolution(for: display) ?? GameApp.resolution)
     }
     #else
     /// The display link of the screen the window is on, which follows it to another.
