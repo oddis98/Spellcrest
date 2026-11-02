@@ -1,0 +1,1 @@
+{"hitbox":{"height":4,"width":4,"x":0,"y":0},"opaque":true,"properties":[{"name":"cut","type":"sprite","value":"post-cut"},{"name":"room"}],"solid":true,"sprite":"post"}
