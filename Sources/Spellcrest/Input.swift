@@ -84,6 +84,11 @@ public enum Button: Sendable, CaseIterable {
     /// as on a Mac, or with the screen upright, where they're below the game.
     public internal(set) static var touchControls: [Rect] = []
 
+    /// How the touch controls are laid out on an iPhone or iPad: a D-pad or a stick, and the buttons where the game puts
+    /// them (`TouchLayout`); the D-pad and A, B, X and Y in a diamond unless the game says otherwise. Set it as the game
+    /// starts, or as it goes, and the controls change at the next frame, whatever's held on them let go.
+    public static var touchLayout = TouchLayout.standard
+
     /// Whether the touch controls stand aside, for a window that takes taps all over the canvas, as an inventory's grid
     /// does: while it's true they don't show, `touchControls` is empty, and every finger is the pointer. A game sets it
     /// as such a window opens and clears it as it closes, and the controls come back as they were.
@@ -185,6 +190,10 @@ public enum Button: Sendable, CaseIterable {
         }
     }
     static var tapped: Set<Button> = [] // gone down on them since the last update, so a tap between two counts
+    /// Where the touch controls' stick is pushed, no longer than 1: zero without one, or no thumb on it.
+    static var touchStick = Vector.zero {
+        didSet { if touchStick != .zero { using = .touch } }
+    }
     /// Held on a keyboard, fed by GameViewController.
     static var keys: Set<GCKeyCode> = [] {
         didSet {
@@ -253,6 +262,7 @@ public enum Button: Sendable, CaseIterable {
         hardware = !keys.isEmpty || !pad.isEmpty
         now = held.union(touched).union(tapped).union(typed.compactMap { keyMap[$0] })
         tapped = []
+        if !stickNow { stick = touchStick } // the touch controls' stick, when a controller's isn't pushed
         #endif
         pointer = click ?? mouse
         if down || click != nil { now.insert(.pointer) }
@@ -274,6 +284,17 @@ public enum Button: Sendable, CaseIterable {
     }
 
     nonisolated static func length(_ vector: Vector) -> Double { (vector * vector).sum().squareRoot() }
+
+    /// The D-pad's buttons a stick pushed to `stick` holds: past half way, by its quarter, both of two between them, as
+    /// the D-pad holds them, eight ways.
+    nonisolated static func buttons(pushedTo stick: Vector) -> Set<Button> {
+        let far = length(stick)
+        guard far > 0.5 else { return [] }
+        var held: Set<Button> = []
+        if abs(stick.x) > far * 0.38 { held.insert(stick.x < 0 ? .left : .right) } // 0.38 ≈ sin 22.5°
+        if abs(stick.y) > far * 0.38 { held.insert(stick.y < 0 ? .up : .down) }
+        return held
+    }
 
     /// What a controller holds: its D-pad, or its left stick past half way, as the D-pad's buttons, and A, B, X, Y and Menu.
     nonisolated static func buttons(of gamepad: GCExtendedGamepad) -> Set<Button> {
