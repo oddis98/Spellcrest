@@ -68,8 +68,16 @@ import Synchronization
     /// Lights where there's no entity: a torch on a wall, a flash where a spell lands. Its map's tiles that light are lit
     /// as these are (`Tilemap.lamps`).
     public var lamps: [Lamp] = []
+    /// How fast its world goes: 1, the default, as it is; 0 holds it still for the few updates a hit lands; 0.3 slows it
+    /// to a crawl as a fight's last foe falls. Its entities (their `update` gets `dt` times it), their sprites' and lights'
+    /// time, their emitters, its tiles, its particles, its lamps, its weather, and the clock its clouds, fog, swaying
+    /// and shaders go by, all go by it. Its own `update` still gets the real `dt`, so it can count down a hold and read
+    /// the buttons, and slows what it moves itself by this; the view's shake and a transition keep real time too, so a
+    /// hit's shake plays out while its hold keeps the rest still; and what's drawn after `super.draw` is the game's.
+    public var timeScale = 1.0
     var drift = Vector.zero // how far the weather's wind has blown it
-    var clock = 0.0 // seconds the scene has updated, for what moves: clouds, fog, swaying, shaking, shaders
+    var clock = 0.0 // seconds the scene's world has gone, by its `timeScale`: clouds, fog, swaying, shaders
+    var shook = 0.0 // seconds the scene has updated, in real time, which the shake wobbles by
     var shaking = Shake()
     var added = 0 // entities added so far, which numbers each, for its light's flicker
 
@@ -83,7 +91,7 @@ import Synchronization
     /// How far the shake moves the view now, in pixels: the world is drawn with its top-left corner at `camera` plus
     /// this. What a game places on the view by `camera`, like a layer shader's position or a HUD over an entity, takes
     /// it off too to stay with the world as it shakes: `Shader(.ripple, [x - camera.x - shakeOffset.x, …])`.
-    public var shakeOffset: Vector { shaking.offset(at: clock) }
+    public var shakeOffset: Vector { shaking.offset(at: shook) }
 
     /// Switches to `next` through `color`: this scene stands still while the view fades to the color over the first
     /// half of `duration` seconds, then `next` becomes `current` and updates while it fades back in. It's
@@ -127,12 +135,15 @@ import Synchronization
         if change.next == nil { current.advance(dt) }
     }
 
-    /// An update, and the scene's time and shake with it, whether or not the game calls super.
+    /// An update, and the scene's time and shake with it, whether or not the game calls super: its world's by its
+    /// `timeScale`, the shake's and its own update's in real time.
     func advance(_ dt: Double) {
-        clock += dt
+        let scaled = dt * max(0, timeScale)
+        clock += scaled
+        shook += dt
         shaking.decay(dt)
-        particles.update(dt) // first, so what an update puts out is drawn where it came out
-        if let weather { drift += weather.wind * dt }
+        particles.update(scaled) // first, so what an update puts out is drawn where it came out
+        if let weather { drift += weather.wind * scaled }
         update(dt)
     }
 
@@ -233,7 +244,8 @@ import Synchronization
         return Entity(object)
     }
 
-    /// Runs 60 times a second. Call super to update the entities and put out their emitters' particles.
+    /// Runs 60 times a second, `dt` the real time since the last. Call super to update the entities and put out their
+    /// emitters' particles, by the scene's `timeScale`.
     /// Called on an iPhone or iPad when the display the game is on changes, and as the game's view is first laid out: it
     /// turned, a foldable opened, or the room the system needs, its safe area, moved; and the game gave the canvas for it
     /// (`Game.resolution(for:)`). Lay out again what was placed for the old shape. `old` is the canvas's size before, the
@@ -242,6 +254,7 @@ import Synchronization
     open func resized(from old: Size) {}
 
     open func update(_ dt: Double) {
+        let dt = dt * max(0, timeScale)
         for entity in entities {
             entity.update(dt)
             entity.sprite?.time += dt
@@ -283,8 +296,8 @@ import Synchronization
             let middle = follow.drawnAt + [Double(follow.hitbox.x + follow.hitbox.width / 2), Double(follow.hitbox.y + follow.hitbox.height / 2)]
             camera = Self.camera(following: middle, view: screen.size, map: tilemap?.size)
         }
-        screen.time = clock - (1 - screen.alpha) * Loop.step // between updates, as the entities are
-        screen.offset = camera + shaking.offset(at: screen.time)
+        screen.time = clock - (1 - screen.alpha) * Loop.step * max(0, timeScale) // between updates, as the entities are
+        screen.offset = camera + shaking.offset(at: shook - (1 - screen.alpha) * Loop.step)
         (screen.blooming, screen.glowed, screen.shaping) = (bloom != nil, [], shaping) // what glows is kept for the bloom as it's drawn
         let tiles: [Shine] = tilemap.map { map in
             map.lamps.enumerated().map { i, lamp in // flickering with the map's time, each as its own
@@ -320,7 +333,7 @@ import Synchronization
         lit(.pixel)
         if let tilemap { screen.draw(tilemap, layers: tilemap.layers.indices.filter { !tilemap.above.contains($0) }) }
         let standing: Screen.Lighting = isometric ? .raised : ySort ? .standing : .pixel
-        let blown = drift - (weather?.wind ?? .zero) * (1 - screen.alpha) * Loop.step // between updates, as the time is
+        let blown = drift - (weather?.wind ?? .zero) * (1 - screen.alpha) * Loop.step * max(0, timeScale) // between updates, as the time is
         let laid = screen.lay(particles, weather: weather, drift: blown, among: order, keys: keys)
         screen.draw(laid, at: 0) // on the ground
         for (i, entity) in order.enumerated() {
