@@ -40,6 +40,16 @@ public struct Emitter: Sendable, Equatable {
     public var glows: Bool
     /// Where they draw among the scene's entities.
     public var depth: Depth
+    /// How many pixels square each is as it dies, if not `size`: it grows or shrinks between them over its life, by
+    /// whole pixels, as an ember cools from 2 to 1. One that shrinks to 0 is gone. Squares only: an image's frames grow.
+    public var endSize: Int?
+    /// How long a trail each draws behind it, in seconds of its speed: 0, the default, none; 0.03 draws a spark going
+    /// 200 pixels a second with 6 pixels behind it, fading toward its tail, so a fast one streaks and a slow one is a dot.
+    /// Its trail is squares of its size on the canvas's whole pixels, as it is.
+    public var streak: Double
+    /// How many quarter turns an image each makes a second, each from a quarter of its own: 4 tumbles a leaf round once
+    /// a second. Pixel art turned by quarters keeps its pixels whole and square, as turned any other way it wouldn't.
+    public var spin: Double
 
     /// Where particles draw among a scene's entities.
     public enum Depth: Sendable, Equatable {
@@ -58,10 +68,11 @@ public struct Emitter: Sendable, Equatable {
     public init(rate: Double = 0, life: ClosedRange<Double> = 0.3...0.7, speed: ClosedRange<Double> = 10...40, angle: Double = 0,
                 spread: Double = 2 * .pi, area: Double = 0, offset: Vector = .zero, gravity: Vector = .zero, drag: Double = 0,
                 jitter: Double = 0, colors: [UInt32] = [0xFFFFFF], fade: Bool = true, size: Int = 1, image: ImageName? = nil,
-                glows: Bool = true, depth: Depth = .standing) {
+                glows: Bool = true, depth: Depth = .standing, endSize: Int? = nil, streak: Double = 0, spin: Double = 0) {
         (self.rate, self.life, self.speed, self.angle, self.spread, self.area, self.offset) = (rate, life, speed, angle, spread, area, offset)
         (self.gravity, self.drag, self.jitter) = (gravity, drag, jitter)
         (self.colors, self.fade, self.size, self.image, self.glows, self.depth) = (colors, fade, size, image, glows, depth)
+        (self.endSize, self.streak, self.spin) = (endSize, streak, spin)
     }
 }
 
@@ -215,10 +226,12 @@ public struct Weather: Sendable, Equatable {
     struct Kind: Equatable {
         let gravity: Vector, drag: Double, jitter: Double
         let colors: [UInt32], fade: Bool, size: Int, image: ImageName?, glows: Bool, depth: Emitter.Depth
+        let endSize: Int?, streak: Double, spin: Double
 
         init(_ e: Emitter) {
             (gravity, drag, jitter) = (e.gravity, e.drag, e.jitter)
             (colors, fade, size, image, glows, depth) = (e.colors, e.fade, max(e.size, 1), e.image, e.glows, e.depth)
+            (endSize, streak, spin) = (e.endSize.map { max($0, 0) }, max(e.streak, 0), e.spin)
         }
     }
 }
@@ -271,17 +284,19 @@ extension Screen {
         struct Look {
             let texture: MTLTexture, width: Int, height: Int, columns: Int, frames: Int
             let colors: [UInt32], fade: Bool, glows: Bool, mode: Float, depth: Emitter.Depth
+            let endSize: Int?, streak: Float, spin: Float
         }
         let looks = particles.kinds.map { kind -> Look in
             let mode: Float = !lit || kind.glows ? 0 : kind.depth == .air ? Lighting.open.rawValue : Lighting.pixel.rawValue
             guard let image = kind.image?.name else {
                 return Look(texture: white, width: kind.size, height: kind.size, columns: 1, frames: 1, colors: kind.colors, fade: kind.fade,
-                            glows: kind.glows, mode: mode, depth: kind.depth)
+                            glows: kind.glows, mode: mode, depth: kind.depth, endSize: kind.endSize, streak: Float(kind.streak), spin: 0)
             }
             let (texture, frame) = (texture(image), frame(image))
             let columns = max(1, texture.width / max(frame.width, 1)), rows = max(1, texture.height / max(frame.height, 1))
             return Look(texture: texture, width: frame.width, height: frame.height, columns: columns, frames: columns * rows, colors: kind.colors,
-                        fade: kind.fade, glows: kind.glows, mode: mode, depth: kind.depth)
+                        fade: kind.fade, glows: kind.glows, mode: mode, depth: kind.depth, endSize: nil, streak: Float(kind.streak),
+                        spin: Float(kind.spin))
         }
         let order = Set(particles.kinds.map { [$0.glows ? "1" : "0", $0.image?.name ?? ""] }).sorted { $0.lexicographicallyPrecedes($1) }
         let rank = particles.kinds.map { kind in order.firstIndex(of: [kind.glows ? "1" : "0", kind.image?.name ?? ""])! }
@@ -294,12 +309,14 @@ extension Screen {
         let (right, bottom) = (left + Float(size.width) + 1, top + Float(size.height) + 1)
         // Read once: in a debug build each read of the particles' arrays is checked, as they can change.
         let (xs, ys, ages, lives, kindOf, depths) = (particles.x, particles.y, particles.age, particles.life, particles.kind, particles.sortY)
+        let (vxs, vys) = (particles.vx, particles.vy)
         var keys = [Int](repeating: -1, count: n), starts = [Int](repeating: 0, count: places * ranks + 1)
         var shown = 0
         for i in 0..<n {
             let k = kindOf[i], look = looks[k]
-            let (x, y) = (xs[i].rounded(.down) - Float(look.width / 2), ys[i].rounded(.down) - Float(look.height / 2))
-            guard x + Float(look.width) > left, x < right, y + Float(look.height) > top, y < bottom else { continue }
+            let reach = Float(max(look.width, look.height, look.endSize ?? 0)) + look.streak * hypot(vxs[i], vys[i]) // its trail too
+            let (x, y) = (xs[i].rounded(.down) - reach, ys[i].rounded(.down) - reach)
+            guard x + reach * 2 > left, x < right, y + reach * 2 > top, y < bottom else { continue }
             let at = switch look.depth {
             case .ground: 0
             case .air: air
@@ -332,24 +349,53 @@ extension Screen {
                 while at < shown, keys[sorted[at]] == key {
                     let i = sorted[at]
                     let kind = looks[kindOf[i]]
+                    at += 1
                     let t = min(ages[i] / max(lives[i], 0.0001), 1) // a life of none, put out this update, is over
                     let frame = min(kind.frames - 1, Int(t * Float(kind.frames)))
                     let (u, v) = (Float(frame % kind.columns * kind.width), Float(frame / kind.columns * kind.height))
-                    let left = ((Double(xs[i].rounded(.down)) - Double(kind.width / 2) - offset.x) * grid).rounded(.down) / grid
-                    let top = ((Double(ys[i].rounded(.down)) - Double(kind.height / 2) - offset.y) * grid).rounded(.down) / grid
+                    var (width, height) = (kind.width, kind.height)
+                    if let end = kind.endSize { // a square growing or shrinking by whole pixels
+                        width = Int((Float(width) + Float(end - width) * t).rounded())
+                        height = width
+                        if width < 1 { continue }
+                    }
+                    // Turned by quarters, each from its own, which its life (at random) says: a frame on its side is as
+                    // tall as it was wide.
+                    let quarter = kind.spin == 0 ? 0 : (Int(lives[i] * 4096) + Int((ages[i] * kind.spin).rounded(.down))) & 3
+                    if quarter & 1 == 1 { (width, height) = (height, width) }
                     var color = Particles.color(kind.colors, at: t)
                     if kind.fade { color.w *= 1 - t * t }
-                    // Made from their numbers, not array literals, which a debug build makes arrays of for each particle.
-                    instances.append(SIMD4(Float(left), Float(top), Float(kind.width), Float(kind.height)))
-                    instances.append(color)
-                    instances.append(kind.texture === white ? SIMD4(0, 0, 1, 1)
-                                                            : SIMD4(u / tw, v / th, (u + Float(kind.width)) / tw, (v + Float(kind.height)) / th))
-                    instances.append(SIMD4(kind.mode, 0, 0, 0))
-                    box = SIMD4(min(box.x, Float(left)), min(box.y, Float(top)), max(box.z, Float(left) + Float(kind.width)), max(box.w, Float(top) + Float(kind.height)))
-                    at += 1
+                    let uv = kind.texture === white ? SIMD4<Float>(0, 0, 1, 1)
+                                                    : SIMD4(u / tw, v / th, (u + Float(kind.width)) / tw, (v + Float(kind.height)) / th)
+                    // Its trail first, so its head draws over it: squares of its size back along its way, on whole
+                    // pixels, fading toward its tail.
+                    let speed = hypot(vxs[i], vys[i]), length = Int((speed * kind.streak).rounded())
+                    var squares: [(x: Float, y: Float, alpha: Float)] = []
+                    if length > 0, speed > 0 {
+                        let (back, down) = (-vxs[i] / speed, -vys[i] / speed)
+                        var last = (xs[i].rounded(.down), ys[i].rounded(.down))
+                        for step in 1...length {
+                            let square = ((xs[i] + back * Float(step)).rounded(.down), (ys[i] + down * Float(step)).rounded(.down))
+                            guard square != last else { continue }
+                            last = square
+                            squares.append((square.0, square.1, 1 - Float(step) / Float(length + 1)))
+                        }
+                    }
+                    for (x, y, alpha) in squares.reversed() + [(xs[i].rounded(.down), ys[i].rounded(.down), 1)] {
+                        let left = ((Double(x) - Double(width / 2) - offset.x) * grid).rounded(.down) / grid
+                        let top = ((Double(y) - Double(height / 2) - offset.y) * grid).rounded(.down) / grid
+                        // Made from their numbers, not array literals, which a debug build makes arrays of for each particle.
+                        instances.append(SIMD4(Float(left), Float(top), Float(width), Float(height)))
+                        instances.append(SIMD4(color.x, color.y, color.z, color.w * alpha))
+                        instances.append(uv)
+                        instances.append(SIMD4(kind.mode, Float(quarter), 0, 0))
+                        box = SIMD4(min(box.x, Float(left)), min(box.y, Float(top)), max(box.z, Float(left) + Float(width)), max(box.w, Float(top) + Float(height)))
+                    }
                 }
-                runs[here].append(Laid.Run(start: first, count: instances.count / 4 - first, texture: look.texture, glows: look.glows, blooms: look.glows,
-                                           box: box))
+                if instances.count / 4 > first { // unless every one shrank to nothing
+                    runs[here].append(Laid.Run(start: first, count: instances.count / 4 - first, texture: look.texture, glows: look.glows,
+                                               blooms: look.glows, box: box))
+                }
             }
             let weather = here == 0 ? splashes : here == air ? falling : []
             if !weather.isEmpty {
@@ -470,7 +516,10 @@ vertex Vertex particleVertex(uint i [[vertex_id]], uint n [[instance_id]], const
     float2 xy = (q.place.xy + corner * q.place.zw) / size * 2 - 1;
     Vertex out;
     out.position = float4(xy.x, -xy.y, 0, 1);
-    out.uv = mix(q.uv.xy, q.uv.zw, corner);
+    // Turned by quarters, clockwise: the corner shows the frame's corner a quarter back round.
+    int quarter = int(q.more.y);
+    float2 frame = quarter == 1 ? float2(corner.y, 1 - corner.x) : quarter == 2 ? 1 - corner : quarter == 3 ? float2(1 - corner.y, corner.x) : corner;
+    out.uv = mix(q.uv.xy, q.uv.zw, frame);
     out.color = q.color;
     out.effects = float4(0, 1, q.more.x, 0);
     out.more = float4(0);

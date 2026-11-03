@@ -156,3 +156,42 @@ import Testing
     let snowing = try render(screen) { scene.draw(screen) }.filter { $0 != 0xFF00_0000 }.count
     #expect(snowing > 10 && snowing < 64 * 48 / 4)
 }
+
+@MainActor @Test func aFastSparkStreaksBehindItOnWholePixelsAndASlowOneIsADot() throws {
+    let screen = try canvas(Size(8, 1))
+    let scene = Scene()
+    let spark = Emitter(life: 1...1, speed: 100...100, spread: 0, colors: [0xFF0000], fade: false, glows: false, streak: 0.03)
+    scene.particles.burst(spark, at: [5.5, 0.5], count: 1) // 3 pixels behind it, fading
+    let drawn = try render(screen) { scene.draw(screen) }
+    #expect(colors(drawn, width: 8) == ["..???r.."])
+    #expect(drawn[2] & 0xFF0000 < drawn[3] & 0xFF0000 && drawn[3] & 0xFF0000 < drawn[4] & 0xFF0000) // fading toward its tail
+    scene.particles.removeAll()
+    scene.particles.burst(Emitter(life: 1...1, speed: 10...10, spread: 0, colors: [0xFF0000], fade: false, glows: false, streak: 0.03),
+                          at: [5.5, 0.5], count: 1)
+    #expect(colors(try render(screen) { scene.draw(screen) }, width: 8) == [".....r.."]) // too slow to streak
+}
+
+@MainActor @Test func anEmberShrinksByWholePixelsOverItsLife() throws {
+    let screen = try canvas(Size(5, 5))
+    let scene = Scene()
+    scene.particles.burst(Emitter(life: 1...1, speed: 0...0, colors: [0xFF0000], fade: false, size: 3, glows: false, endSize: 1),
+                          at: [2.5, 2.5], count: 1)
+    func red() throws -> Int { try render(screen) { scene.draw(screen) }.filter { $0 == 0xFFFF_0000 }.count }
+    #expect(try red() == 9) // 3 square as it's born
+    for _ in 0..<30 { scene.advance(1.0 / 60) }
+    #expect(try red() == 4) // 2 square half way
+    for _ in 0..<29 { scene.advance(1.0 / 60) }
+    #expect(try red() == 1) // 1 as it dies
+}
+
+@MainActor @Test func anImageParticleSpinsByQuarterTurns() throws {
+    let screen = try canvas(Size(3, 3))
+    screen.textures["chip"] = try texture([0xFF00_00FF, 0xFFFF_0000], width: 2) // red, then blue, beside it
+    screen.sheets["chip"] = .some(nil)
+    let scene = Scene()
+    let chips = Emitter(life: 1...1, speed: 0...0, fade: false, image: ImageName("chip"), glows: false, spin: 4) // a quarter in a quarter second
+    scene.particles.burst(chips, at: [1.5, 1.5], count: 1)
+    #expect(colors(try render(screen) { scene.draw(screen) }, width: 3) == ["...", "rb.", "..."])
+    for _ in 0..<16 { scene.advance(1.0 / 60) }
+    #expect(colors(try render(screen) { scene.draw(screen) }, width: 3) == [".r.", ".b.", "..."]) // a quarter clockwise: on its side
+}
