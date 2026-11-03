@@ -37,10 +37,14 @@ public struct SheetFile: AssetFile, Equatable, Sendable {
     public struct Animation: Codable, Equatable, Sendable {
         public var frames: [Int]
         public var fps: Double
+        /// Whether it goes round again from its first frame after its last, as it does unless it says `false`; one that
+        /// doesn't holds its last frame, as a swing or a fall does, and its sprite says it's `finished`.
+        public var loop: Bool?
 
-        public init(frames: [Int], fps: Double) {
+        public init(frames: [Int], fps: Double, loop: Bool? = nil) {
             self.frames = frames
             self.fps = fps
+            self.loop = loop
         }
     }
 

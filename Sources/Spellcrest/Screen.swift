@@ -962,6 +962,21 @@ func frameSize(_ name: String) -> Size? {
 let framesRead = Mutex<[String: Size?]>([:])
 
 extension SheetFile.Animation {
-    /// The frame showing `time` seconds in, looping; nil without frames.
-    func frame(at time: Double) -> Int? { frames.isEmpty ? nil : frames[Int(time * fps) % frames.count] }
+    /// The frame showing `time` seconds in, looping, or holding the last for one that doesn't; nil without frames.
+    func frame(at time: Double) -> Int? { frames.isEmpty ? nil : frames[step(at: time)] }
+
+    /// Which of its frames shows `time` seconds in, counting from 0 as it lists them.
+    func step(at time: Double) -> Int {
+        let step = max(0, Int(time * fps))
+        return loop == false ? min(step, frames.count - 1) : step % max(frames.count, 1)
+    }
 }
+
+/// An image's animation by name, as its `.json` gives it, or a person's as the kit does: read `once`, for what a sprite
+/// says of itself between draws (`Sprite.finished`, `frame`).
+func sheetAnimation(_ name: String, of image: String) -> SheetFile.Animation? {
+    if image.hasPrefix(Person.prefix) { return (try? Person.kit())?.animations?[name] }
+    return once(image, in: sheetsRead) { try? SheetFile(contentsOf: assetURL("\(image).json")) }?.animations?[name]
+}
+
+let sheetsRead = Mutex<[String: SheetFile?]>([:])

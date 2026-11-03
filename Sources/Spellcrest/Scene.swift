@@ -257,8 +257,11 @@ import Synchronization
         let dt = dt * max(0, timeScale)
         for entity in entities {
             entity.update(dt)
-            entity.sprite?.time += dt
-            for i in entity.parts.indices { entity.parts[i].sprite.time += dt }
+            if let speed = entity.sprite?.speed { entity.sprite?.time += dt * speed }
+            for i in entity.parts.indices {
+                let speed = entity.parts[i].sprite.speed
+                entity.parts[i].sprite.time += dt * speed
+            }
             entity.light?.time += dt
             if let emitter = entity.emitter, emitter.rate > 0, entity.scene === self {
                 entity.emitted += emitter.rate * dt
@@ -766,6 +769,8 @@ public struct Sprite: Sendable {
     public var flash = 0.0
     /// Adds it to what's under it, unlit, so it shines in the dark: fire, magic, sparks, a lightning bolt.
     public var glows = false
+    /// How fast its animation plays: 1, the default, as its sheet says; 2 twice as fast; 0 holds it where it is.
+    public var speed = 1.0
     /// One of the game's color shaders, from `Assets/Shaders`, that each of its pixels goes through: a shimmer, a pulse,
     /// a dissolve. It draws plain until the shader has compiled, and if it doesn't.
     public var shader: Shader?
@@ -784,6 +789,29 @@ public struct Sprite: Sendable {
     /// Starts the named animation. Playing the one that's already running keeps it going, so it's fine every frame.
     public mutating func play(_ animation: String) {
         if animation != self.animation { (self.animation, time) = (animation, 0) }
+    }
+
+    /// Starts the named animation, from its first frame if `restart`, even when it's the one playing: a second swing
+    /// the same as the first.
+    public mutating func play(_ animation: String, restart: Bool) {
+        if restart || animation != self.animation { (self.animation, time) = (animation, 0) }
+    }
+
+    /// Which of its animation's frames shows, counting from 0 as its sheet lists them; 0 with none. Set it to go to one
+    /// and play on from there: a swing started from its wind-up's last frame.
+    public var frame: Int {
+        get { animation.flatMap { sheetAnimation($0, of: image) }.map { $0.step(at: time) } ?? 0 }
+        set {
+            guard let playing = animation.flatMap({ sheetAnimation($0, of: image) }), playing.fps > 0 else { return }
+            time = (Double(newValue) + 0.001) / playing.fps // a thousandth in, so it's that frame and not the end of the one before
+        }
+    }
+
+    /// Whether its animation is one that doesn't loop (its sheet's `loop: false`) and has shown its last frame for that
+    /// frame's time: a swing's over. One that loops is never finished.
+    public var finished: Bool {
+        guard let playing = animation.flatMap({ sheetAnimation($0, of: image) }), playing.loop == false else { return false }
+        return time * playing.fps >= Double(playing.frames.count)
     }
 
     /// Faces the way `way` goes across the picture, the nearest of eight; for none, it faces as it did. An entity
