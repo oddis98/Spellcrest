@@ -129,18 +129,18 @@ private func png(_ pixels: [UInt32], width: Int) -> Data {
 }
 
 /// A texture's pixels as 0xRRGGBBAA.
-private func pixels(_ texture: MTLTexture) -> [UInt32] {
+private func pixels(_ texture: GPUTexture) -> [UInt32] {
     var bytes = [UInt8](repeating: 0, count: texture.width * texture.height * 4)
-    texture.getBytes(&bytes, bytesPerRow: texture.width * 4, from: MTLRegionMake2D(0, 0, texture.width, texture.height), mipmapLevel: 0)
+    metal(texture).getBytes(&bytes, bytesPerRow: texture.width * 4, from: MTLRegionMake2D(0, 0, texture.width, texture.height), mipmapLevel: 0)
     return (0..<texture.width * texture.height).map { i in
         let p = bytes[i * 4..<i * 4 + 4].map(UInt32.init)
-        return texture.pixelFormat == .bgra8Unorm ? p[2] << 24 | p[1] << 16 | p[0] << 8 | p[3] : p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]
+        return texture.format == .bgra8 ? p[2] << 24 | p[1] << 16 | p[0] << 8 | p[3] : p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]
     }
 }
 
 @MainActor @Test func aPersonIsMadeInPlayAndAgainWhenTheirGearOrAPartChanges() throws {
     let game = try makeGame()
-    let screen = Screen(size: Size(8, 8), device: try #require(MTLCreateSystemDefaultDevice()), format: .bgra8Unorm)
+    let screen = Screen(size: Size(8, 8), gpu: try #require(systemGPU()), format: .bgra8)
     var ann = Person("ann")
     #expect(ann.parts == ["body": "plain", "hat": "cap"] && ann.wears == ["cloth": "red"])
     var sprite = Sprite(ann)
@@ -164,7 +164,7 @@ private func pixels(_ texture: MTLTexture) -> [UInt32] {
 
 @MainActor @Test func aPersonWhoCantBeMadeDrawsNothingAndSaysWhy() throws {
     _ = try makeGame()
-    let screen = Screen(size: Size(8, 8), device: try #require(MTLCreateSystemDefaultDevice()), format: .bgra8Unorm)
+    let screen = Screen(size: Size(8, 8), gpu: try #require(systemGPU()), format: .bgra8)
     let nobody = Sprite(Person(parts: ["body": "plain", "cape": "long"]))
     #expect(screen.texture(nobody.image).width == screen.clear.width && screen.sheet(nobody.image) == nil)
     #expect(Person("nobody") == Person()) // no such file

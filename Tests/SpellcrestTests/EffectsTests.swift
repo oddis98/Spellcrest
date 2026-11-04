@@ -139,7 +139,7 @@ import Testing
             screen.fill(Rect(x: 0, y: 0, width: 2, height: 2), color: chosen ? 0x00FF00 : 0xFF0000)
         }
     }
-    let loop = Loop(resolution: Size(2, 2), device: try #require(MTLCreateSystemDefaultDevice()))
+    let loop = Loop(resolution: Size(2, 2), gpu: try #require(systemGPU()))
     Scene.current = Title()
     defer { (Scene.current, Scene.changing) = (Scene(), nil) }
     for now in [loop.last, loop.last + Loop.step] { // a frame before the choice, red, then the update that makes it
@@ -147,15 +147,12 @@ import Testing
         commands.commit()
         commands.waitUntilCompleted()
     }
-    let commands = try #require(loop.queue.makeCommandBuffer())
-    let pixels = try #require(loop.screen.device.makeBuffer(length: 16, options: .storageModeShared))
-    let blit = try #require(commands.makeBlitCommandEncoder())
-    blit.copy(from: loop.screen.snapshot, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(), sourceSize: MTLSize(width: 2, height: 2, depth: 1),
-              to: pixels, destinationOffset: 0, destinationBytesPerRow: 8, destinationBytesPerImage: 16)
-    blit.endEncoding()
+    let commands = try #require(loop.gpu.commands())
+    let pixels = try #require(loop.gpu.buffer(length: 16))
+    commands.copy(loop.screen.snapshot, to: pixels)
     commands.commit()
     commands.waitUntilCompleted()
-    let snapped = Array(UnsafeBufferPointer(start: pixels.contents().bindMemory(to: UInt32.self, capacity: 4), count: 4))
+    let snapped = Array(pixels.contents.bindMemory(to: UInt32.self).prefix(4))
     #expect(snapped == [UInt32](repeating: 0xFF00_FF00, count: 4) && Scene.changing?.snapped == true && Scene.changing?.old == nil)
 }
 

@@ -16,7 +16,7 @@ import Testing
     }
 
     try replace(with: Data(contentsOf: examples.appending(path: "coin.png")), secondsLater: 0) // 24 x 8
-    let screen = Screen(size: Size(8, 8), device: MTLCreateSystemDefaultDevice()!, format: .bgra8Unorm)
+    let screen = Screen(size: Size(8, 8), gpu: systemGPU()!, format: .bgra8)
     #expect(screen.texture("a").width == 24)
 
     try replace(with: Data(contentsOf: examples.appending(path: "slime.png")), secondsLater: 10) // 48 x 16
@@ -40,7 +40,7 @@ import Testing
         try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: secondsLater)], ofItemAtPath: file.path)
     }
 
-    let screen = Screen(size: Size(8, 8), device: MTLCreateSystemDefaultDevice()!, format: .bgra8Unorm)
+    let screen = Screen(size: Size(8, 8), gpu: systemGPU()!, format: .bgra8)
     #expect(screen.normalMap("a") == nil) // none yet: lit as before
     try replace(with: Data(contentsOf: examples.appending(path: "coin.png")), secondsLater: 10) // 24 x 8
     screen.reloadChangedAssets()

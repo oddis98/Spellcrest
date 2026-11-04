@@ -170,9 +170,8 @@ extension ObjectName { static let door = ObjectName("door") }
     Sound.play(.b, volume: 0)
     #expect(Sound.read["b"]?.url.lastPathComponent == "b.m4a")
 
-    let device = try #require(MTLCreateSystemDefaultDevice())
-    let screen = Screen(size: Size(8, 8), device: device, format: .bgra8Unorm)
-    let texture = try #require(device.makeTexture(descriptor: .texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 3, height: 3, mipmapped: false)))
+    let screen = Screen(size: Size(8, 8), gpu: try #require(systemGPU()), format: .bgra8)
+    let texture = try texture([UInt32](repeating: 0, count: 9), width: 3)
     (screen.textures["dot"], screen.sheets["dot"], screen.textures["tiny"]) = (texture, .some(nil), texture)
     (screen.sheets["tiny"], screen.fonts["tiny"]) = (SheetFile(frameWidth: 1, frameHeight: 1, characters: "A"), Font(glyph: Size(1, 1), characters: "A", columns: [0...0]))
     func drawn(_ draw: () -> Void) -> [SIMD4<Float>] {
@@ -233,9 +232,8 @@ extension ObjectName { static let door = ObjectName("door") }
     scene.update(0.5)
     #expect(tree.parts.allSatisfy { $0.sprite.time == 0.5 })
 
-    let device = try #require(MTLCreateSystemDefaultDevice())
-    let screen = Screen(size: Size(32, 32), device: device, format: .bgra8Unorm)
-    (screen.textures["dot"], screen.sheets["dot"]) = (device.makeTexture(descriptor: .texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 3, height: 3, mipmapped: false)), .some(nil))
+    let screen = Screen(size: Size(32, 32), gpu: try #require(systemGPU()), format: .bgra8)
+    (screen.textures["dot"], screen.sheets["dot"]) = (try texture([UInt32](repeating: 0, count: 9), width: 3), .some(nil))
     scene.draw(screen)
     let corners = stride(from: 0, to: screen.vertices.count, by: 30).map { [screen.vertices[$0][0], screen.vertices[$0][1]] } // each quad's first corner
     #expect(corners == [[10, 10], [10, 7], [20, 11], [11, 4]]) // the tree and its part by depth, the player in front, the crown over all

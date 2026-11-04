@@ -53,7 +53,7 @@ import Testing
     }
     let a = ["###.....", "#.#.....", "###.....", "#.#.....", "#.#.....", "........"]
     try save(a + [".#......", "......##"], secondsLater: 0)
-    let screen = Screen(size: Size(8, 8), device: try #require(MTLCreateSystemDefaultDevice()), format: .bgra8Unorm)
+    let screen = Screen(size: Size(8, 8), gpu: try #require(systemGPU()), format: .bgra8)
     #expect(screen.font("tiny").1.columns == [0...2, nil, 1...1, 2...3])
     try save(a.map { $0.prefix(7) + "#" } + [".#......", "......##"], secondsLater: 10) // a B of one column, at the right
     screen.reloadChangedAssets()
@@ -61,29 +61,20 @@ import Testing
 }
 
 @MainActor @Test func textAndSpritesDrawTinted() throws {
-    let device = try #require(MTLCreateSystemDefaultDevice())
-    let screen = Screen(size: Size(8, 7), device: device, format: .bgra8Unorm)
-    let white = try #require(device.makeTexture(descriptor: .texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 2, height: 2, mipmapped: false)))
-    white.replace(region: MTLRegionMake2D(0, 0, 2, 2), mipmapLevel: 0, withBytes: [UInt32](repeating: 0xFFFF_FFFF, count: 4), bytesPerRow: 8)
-    screen.textures["dot"] = white // a 2x2 sprite, one frame since there's no dot.json
-    let commands = try #require(device.makeCommandQueue()?.makeCommandBuffer())
-    let pass = MTLRenderPassDescriptor()
-    pass.colorAttachments[0].texture = screen.canvas
-    pass.colorAttachments[0].loadAction = .clear // to black
-    screen.begin(commands, pass)
+    let screen = try canvas(Size(8, 7))
+    screen.textures["dot"] = try texture([UInt32](repeating: 0xFFFF_FFFF, count: 4), width: 2) // a 2x2 sprite, one frame since there's no dot.json
+    let commands = try #require(screen.gpu.commands())
+    screen.begin(commands, Targets([Target(texture: screen.canvas, load: .clear(red: 0, green: 0, blue: 0, alpha: 1))])) // to black
     screen.text("A", x: 1, y: 1, color: 0xFF0000)
     var sprite = Sprite("dot")
     sprite.color = 0x00FF00
     screen.draw(sprite, x: 5, y: 1)
     screen.end()
-    let pixels = try #require(device.makeBuffer(length: 8 * 7 * 4, options: .storageModeShared))
-    let blit = try #require(commands.makeBlitCommandEncoder())
-    blit.copy(from: screen.canvas, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(), sourceSize: MTLSize(width: 8, height: 7, depth: 1),
-              to: pixels, destinationOffset: 0, destinationBytesPerRow: 8 * 4, destinationBytesPerImage: 8 * 7 * 4)
-    blit.endEncoding()
+    let pixels = try #require(screen.gpu.buffer(length: 8 * 7 * 4))
+    commands.copy(screen.canvas, to: pixels)
     commands.commit()
     commands.waitUntilCompleted()
-    let bgra = pixels.contents().bindMemory(to: UInt32.self, capacity: 8 * 7)
+    let bgra = pixels.contents.bindMemory(to: UInt32.self)
     let colors = (0..<7).map { y in String((0..<8).map { [0xFFFF_0000: "#", 0xFF00_FF00: "o"][bgra[y * 8 + $0]] ?? "." }) }
     #expect(colors == ["........", "..#..oo.", ".#.#.oo.", ".###....", ".#.#....", ".#.#....", "........"])
 }

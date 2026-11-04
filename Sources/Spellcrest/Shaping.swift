@@ -1,4 +1,4 @@
-import MetalKit
+import Foundation
 
 /// How a scene's lit sprites and tiles show which side their light is on (`Scene.shaping`): a torch lighting a
 /// pillar's face toward it and leaving the far side dark. Only lights do, not daylight, so a scene by day looks as it
@@ -59,12 +59,12 @@ extension Tilemap {
 extension Screen {
     /// `<image>.normal.png`, the normal map beside an image, for light that shapes it; nil without one. It's looked for
     /// the first time it's asked for, and where files can change, loaded once it's there (`reloadChangedAssets`).
-    func normalMap(_ image: String) -> MTLTexture? {
+    func normalMap(_ image: String) -> GPUTexture? {
         let name = "\(image).normal"
         if let texture = textures[name] { return texture === clear ? nil : texture }
         let url = assetURL("\(name).png"), date = modificationDate(url)
         modified["\(name).png"] = date
-        guard date != nil, let texture = try? loader.newTexture(URL: url, options: [.SRGB: false]) else {
+        guard date != nil, let texture = try? self.image(url) else {
             textures[name] = clear // none: lit as before
             return nil
         }
@@ -72,35 +72,3 @@ extension Screen {
         return texture
     }
 }
-
-// How a lit sprite or tile turns toward its light, before the engine's fragments that use it. The direction map
-// (texture 4) holds, at each world pixel, the way to the lights, weighted by how much of each gets there (rg), and how
-// much does (b). A quad shaped by its normal map (texture 5) is lit by it, the light a little above the ground; one
-// with a rim brightens the edge pixels facing it, its neighbors read within its frame (`frame`, its size in texels), so
-// the next frame in its sheet doesn't count. A mirrored sprite (`flip`) is turned back.
-let shapingShaders = """
-float3 shaped(float3 out, bool mapped, float2 uv, float flip, float2 frame, float2 pixel, texture2d<float> t, texture2d<float> normals,
-              texture2d<float> direction, constant View &view) {
-    float4 d = at(direction, pixel / view.scale + view.offset, view);
-    if (d.b < 0.002) return out;
-    float2 toward = d.rg / d.b; // as long as 1 when one light lights it, shorter where lights from all round cancel
-    float reach = saturate(length(toward));
-    if (reach < 0.001) return out;
-    float factor = 1;
-    if (mapped) {
-        constexpr sampler nearest(filter::nearest);
-        float3 n = normals.sample(nearest, uv).xyz * 2 - 1;
-        n.x *= flip;
-        float3 l = normalize(float3(toward, 0.55)); // the light a little above the ground
-        factor += 1.6 * (dot(normalize(n), l) - l.z) * reach;
-    } else {
-        int2 p = int2(floor(uv * float2(t.get_width(), t.get_height()))), size = max(int2(frame), int2(1)), at = p % size;
-        float left = at.x > 0 ? t.read(uint2(p - int2(1, 0))).a : 0, right = at.x < size.x - 1 ? t.read(uint2(p + int2(1, 0))).a : 0;
-        float up = at.y > 0 ? t.read(uint2(p - int2(0, 1))).a : 0, down = at.y < size.y - 1 ? t.read(uint2(p + int2(0, 1))).a : 0;
-        float2 outward = float2((left - right) * flip, up - down); // toward the empty side: the sprite's edge
-        if (dot(outward, outward) > 0.01) factor += 0.85 * saturate(dot(normalize(outward), normalize(toward))) * reach;
-    }
-    return out * max(factor, 0.25);
-}
-
-"""

@@ -118,7 +118,7 @@ func png(width: Int, height: Int, to file: URL) throws {
 }
 
 @MainActor @Test func mapsQueueOnlyTheTilesInView() throws {
-    let screen = Screen(size: Size(16, 16), device: try #require(MTLCreateSystemDefaultDevice()), format: .bgra8Unorm)
+    let screen = Screen(size: Size(16, 16), gpu: try #require(systemGPU()), format: .bgra8)
     screen.textures["tiles"] = screen.builtInFont // any image does as a tileset
     let map = Tilemap("tiles", tileSize: 8, rows: Array(repeating: "#####", count: 3), legend: ["#": 0]) // 5x3 tiles on a 2x2-tile canvas
     func tiles(at camera: Vector) -> Int {

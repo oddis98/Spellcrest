@@ -106,36 +106,27 @@ import Testing
 
 /// A screen of `size` to draw on in tests.
 @MainActor func canvas(_ size: Size) throws -> Screen {
-    Screen(size: size, device: try #require(MTLCreateSystemDefaultDevice()), format: .bgra8Unorm)
+    Screen(size: size, gpu: try #require(systemGPU()), format: .bgra8)
 }
 
 /// A texture of RGBA pixels, row by row.
-@MainActor func texture(_ pixels: [UInt32], width: Int) throws -> MTLTexture {
-    let device = try #require(MTLCreateSystemDefaultDevice())
-    let texture = try #require(device.makeTexture(descriptor: .texture2DDescriptor(pixelFormat: .rgba8Unorm, width: width,
-                                                                                      height: pixels.count / width, mipmapped: false)))
-    texture.replace(region: MTLRegionMake2D(0, 0, width, pixels.count / width), mipmapLevel: 0, withBytes: pixels, bytesPerRow: width * 4)
-    return texture
+@MainActor func texture(_ pixels: [UInt32], width: Int) throws -> GPUTexture {
+    let gpu = try #require(systemGPU())
+    return try #require(pixels.withUnsafeBytes { gpu.texture(rgba: $0, width: width, height: pixels.count / width) })
 }
 
 /// What `draw` draws on the screen's canvas, cleared to black, as 0xAARRGGBB: `scale` pixels for each of the game's.
 @MainActor func render(_ screen: Screen, _ draw: () -> Void) throws -> [UInt32] {
     let (width, height) = (screen.canvas.width, screen.canvas.height)
-    let commands = try #require(screen.device.makeCommandQueue()?.makeCommandBuffer())
-    let pass = MTLRenderPassDescriptor()
-    pass.colorAttachments[0].texture = screen.canvas
-    pass.colorAttachments[0].loadAction = .clear
-    screen.begin(commands, pass)
+    let commands = try #require(screen.gpu.commands())
+    screen.begin(commands, Targets([Target(texture: screen.canvas, load: .clear(red: 0, green: 0, blue: 0, alpha: 1))]))
     draw()
     screen.end()
-    let pixels = try #require(screen.device.makeBuffer(length: width * height * 4, options: .storageModeShared))
-    let blit = try #require(commands.makeBlitCommandEncoder())
-    blit.copy(from: screen.canvas, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(), sourceSize: MTLSize(width: width, height: height, depth: 1),
-              to: pixels, destinationOffset: 0, destinationBytesPerRow: width * 4, destinationBytesPerImage: width * height * 4)
-    blit.endEncoding()
+    let pixels = try #require(screen.gpu.buffer(length: width * height * 4))
+    commands.copy(screen.canvas, to: pixels)
     commands.commit()
     commands.waitUntilCompleted()
-    return Array(UnsafeBufferPointer(start: pixels.contents().bindMemory(to: UInt32.self, capacity: width * height), count: width * height))
+    return Array(pixels.contents.bindMemory(to: UInt32.self).prefix(width * height))
 }
 
 /// Each row as letters: r, g and b for those colors, "." for black and "?" for anything else.

@@ -44,7 +44,7 @@ import Testing
     #expect(musicPlayer() !== b && Music.track?.name == "b" && Music.player?.isPlaying == true)
 
     // Pausing the game holds the track's place, and one that starts or restarts meanwhile waits for the resume.
-    let loop = Loop(resolution: Size(8, 8), device: try #require(MTLCreateSystemDefaultDevice()))
+    let loop = Loop(resolution: Size(8, 8), gpu: try #require(systemGPU()))
     let playing = try #require(musicPlayer())
     loop.paused = true
     #expect(musicPlayer() === playing && !playing.isPlaying)
@@ -83,7 +83,7 @@ import Testing
     let folder = try silentTracks()
     Music.volume = 0
     defer { Music.resume(); Music.stop(); Music.volume = 1 }
-    let loop = Loop(resolution: Size(8, 8), device: try #require(MTLCreateSystemDefaultDevice()))
+    let loop = Loop(resolution: Size(8, 8), gpu: try #require(systemGPU()))
     Music.play("a")
     let a = try #require(musicPlayer())
     Music.pause()

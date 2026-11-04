@@ -1,4 +1,4 @@
-import MetalKit
+import Foundation
 
 /// A shader in the game's `Assets`, by its `.metal` file's name: `Shader(.ripple)`. See `ImageName`, which says how
 /// it's saved too.
@@ -53,8 +53,8 @@ struct ShaderKey: Hashable {
 /// A game's shader as it's compiled: its pipeline (and for a sprite that glows, another) once it has, nil if it didn't,
 /// when its file last changed as it was read, and whether it last failed.
 struct Compiled {
-    var state: MTLRenderPipelineState?
-    var glowing: MTLRenderPipelineState?
+    var state: GPUPipeline?
+    var glowing: GPUPipeline?
     var modified: Date?
     var compiling = true
     var failed = false
@@ -63,7 +63,7 @@ struct Compiled {
 extension Screen {
     /// A game's shader's pipelines as `kind` once it has compiled; nil until then, if it doesn't, or without a file.
     /// Asked for the first time, it starts compiling.
-    func shader(_ name: String, _ kind: ShaderKind) -> (state: MTLRenderPipelineState, glowing: MTLRenderPipelineState?)? {
+    func shader(_ name: String, _ kind: ShaderKind) -> (state: GPUPipeline, glowing: GPUPipeline?)? {
         let key = ShaderKey(name: name, kind: kind)
         guard let compiled = shaders[key] else {
             compile(key)
@@ -84,21 +84,21 @@ extension Screen {
             return
         }
         shaders[key]?.compiling = true
-        let format = canvas.pixelFormat
-        device.makeLibrary(source: shaderSource(text, name: key.name, path: url.path, kind: key.kind), options: nil) { library, error in
-            // Its pipelines are made on a queue of their own once Metal's callback is done with: made in the callback, a
-            // pipeline can wait on the queue the callback runs on, which trapped in the iOS 27 simulator now and then
-            // (`__DISPATCH_WAIT_FOR_QUEUE__`) when two shaders compiled at once, as an app's do as it starts.
-            let compiledLibrary = Handed(value: library), problem = error.map { "\($0.localizedDescription)" }
+        let (format, gpu) = (canvas.format, self.gpu)
+        gpu.compile(text, name: key.name, path: url.path, kind: key.kind) { library, problem in
+            // Its pipelines are made on a queue of their own once the compiler's callback is done with: made in Metal's
+            // callback, a pipeline can wait on the queue the callback runs on, which trapped in the iOS 27 simulator now
+            // and then (`__DISPATCH_WAIT_FOR_QUEUE__`) when two shaders compiled at once, as an app's do as it starts.
             DispatchQueue.global(qos: .userInitiated).async {
                 var made: Compiled?
-                if let library = compiledLibrary.value {
-                    let blend: (MTLBlendFactor, MTLBlendFactor) = key.kind == .color ? (.sourceAlpha, .oneMinusSourceAlpha) : (.one, .zero)
+                if let library {
+                    let blend: (BlendFactor, BlendFactor) = key.kind == .color ? (.sourceAlpha, .oneMinusSourceAlpha) : (.one, .zero)
                     let entry = key.kind == .color ? "spellcrestColor" : "spellcrestLayer"
                     let vertex = key.kind == .color ? "litVertex" : "spriteVertex" // a sprite's lit as the engine's are
-                    made = Compiled(state: makeState(library, entry, vertex: vertex, formats: [format], rgb: blend,
-                                                     alpha: key.kind == .color ? (.one, .oneMinusSourceAlpha) : (.one, .zero)),
-                                    glowing: key.kind == .color ? makeState(library, entry, vertex: vertex, formats: [format], rgb: (.one, .one), alpha: (.zero, .one)) : nil)
+                    made = Compiled(state: gpu.pipeline(entry, vertex: vertex, library: library, formats: [format], rgb: blend,
+                                                        alpha: key.kind == .color ? (.one, .oneMinusSourceAlpha) : (.one, .zero)),
+                                    glowing: key.kind == .color ? gpu.pipeline(entry, vertex: vertex, library: library, formats: [format], rgb: (.one, .one),
+                                                                               alpha: (.zero, .one)) : nil)
                 }
                 let handed = Handed(value: made)
                 DispatchQueue.main.async {
@@ -144,41 +144,14 @@ extension Screen {
         for effect in effects {
             guard let made = shader(effect.name.name, .layer) else { continue }
             let canvas = current!, picture = self.canvas
-            let pass = MTLRenderPassDescriptor()
-            pass.colorAttachments[0].texture = spare
-            pass.colorAttachments[0].loadAction = .dontCare
-            go(Pass(descriptor: pass, usual: made.state, grid: Double(scale), size: size))
+            go(Pass(targets: Targets([Target(texture: spare, load: .dontCare)]), usual: made.state, grid: Double(scale), size: size))
             queue(picture, [0, 0, Float(size.width), Float(size.height)], values: values(effect))
             end()
             turnOver()
-            canvas.descriptor.colorAttachments[0].texture = self.canvas
-            canvas.descriptor.colorAttachments[0].loadAction = .load
+            canvas.targets.colors[0] = Target(texture: self.canvas, load: .load)
             go(canvas)
         }
     }
-}
-
-/// A game's shader file made whole: the engine's header, what its shaders share (`shaderCommon`), then the file with
-/// its lines counted from its own first line (`#line`), so errors name it and its lines, then an entry point that calls
-/// its function, on one line counted as the file's first.
-func shaderSource(_ text: String, name: String, path: String, kind: ShaderKind) -> String {
-    let file = "#line 1 \"\(path.replacingOccurrences(of: "\"", with: "\\\""))\"\n"
-    let entry = switch kind {
-    case .color:
-        "fragment float4 spellcrestColor(Vertex in [[stage_in]], texture2d<float> t [[texture(0)]], texture2d<float> shadowed [[texture(1)]], "
-            + "texture2d<float> open [[texture(2)]], texture2d<float> clouds [[texture(3)]], constant View &view [[buffer(0)]], "
-            + "constant Values &values [[buffer(1)]]) { "
-            + "if (order(in.position.xy / view.scale) >= in.effects.y) discard_fragment(); constexpr sampler nearest(filter::nearest); "
-            + "float4 c = t.sample(nearest, in.uv) * in.color; Values v = values; "
-            + "float4 s = float4(\(name)(in.uv * float2(t.get_width(), t.get_height()) - in.more.zw, half4(c), v)); "
-            + "float3 rgb = mix(s.rgb, float3(1), saturate(in.effects.x)); if (in.effects.w > 0.5) return float4(rgb * s.a, s.a); "
-            + "return float4(lit(rgb, in.effects.z, in.shade, in.position.xy, view, shadowed, open, clouds, in.stand), s.a); }"
-    case .layer:
-        "fragment float4 spellcrestLayer(Vertex in [[stage_in]], texture2d<float> picture [[texture(0)]], constant View &view [[buffer(0)]], "
-            + "constant Values &values [[buffer(1)]]) { Values v = values; Layer layer = { picture, view.scale }; "
-            + "return float4(\(name)(in.position.xy / view.scale, layer, v)); }"
-    }
-    return shaderCommon + file + text + "\n" + file + entry + "\n"
 }
 
 /// Whether a shader file's function, named as the file, takes a `Layer`, so it goes on the picture, or else a color.

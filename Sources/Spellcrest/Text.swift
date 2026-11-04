@@ -1,5 +1,4 @@
-import ImageIO
-import Metal
+import Foundation
 
 public extension Screen {
     /// Draws `text` with its top-left corner at (x, y); `\n` starts a new line. Given a `width` in pixels, it wraps: a
@@ -72,7 +71,7 @@ public extension Screen {
 
 extension Screen {
     /// A font's image and how it's cut into glyphs.
-    func font(_ name: String?) -> (MTLTexture, Font) {
+    func font(_ name: String?) -> (GPUTexture, Font) {
         guard let name else { return (builtInFont, .builtIn) }
         let texture = texture(name)
         guard let sheet = sheet(name), let characters = sheet.characters else {
@@ -87,16 +86,6 @@ extension Screen {
         fonts[name] = font
         return (texture, font)
     }
-}
-
-/// Which pixels of a PNG show (alpha above 0), row by row, and how wide it is; nil if it can't be read.
-func opaquePixels(_ url: URL) -> (width: Int, pixels: [Bool])? {
-    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil), let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
-          let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width,
-                                  space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.alphaOnly.rawValue),
-          let data = context.data else { return nil }
-    context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
-    return (image.width, UnsafeBufferPointer(start: data.assumingMemoryBound(to: UInt8.self), count: image.width * image.height).map { $0 > 0 })
 }
 
 /// How a font's image is cut up: into frames of one size, which show `characters` in order. A glyph takes up the
@@ -208,13 +197,9 @@ extension Font {
                               columns: measure(builtInPixels, width: 64, glyph: Size(4, 6)))
 
     /// The built-in font's glyphs, white on clear.
-    static func builtInTexture(_ device: MTLDevice) -> MTLTexture {
-        let (width, height) = (64, 24)
+    static func builtInTexture(_ gpu: GPU) -> GPUTexture {
         let pixels: [UInt32] = builtInPixels.map { $0 ? 0xFFFF_FFFF : 0 }
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: width, height: height, mipmapped: false)
-        let texture = device.makeTexture(descriptor: descriptor)!
-        texture.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0, withBytes: pixels, bytesPerRow: width * 4)
-        return texture
+        return pixels.withUnsafeBytes { gpu.texture(rgba: $0, width: 64, height: 24)! }
     }
 
     /// `builtInArt` as 64x24 pixels, row by row: true where there's a "#".

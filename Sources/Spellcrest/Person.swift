@@ -1,7 +1,4 @@
-import CoreGraphics
 import Foundation
-import ImageIO
-import Metal
 import SpellcrestProtocol
 import Synchronization
 
@@ -95,34 +92,12 @@ extension Person {
     }
 }
 
-/// A PNG's pixels, 0xRRGGBBAA with straight alpha, and its width.
-func readPixels(_ url: URL) throws -> (pixels: [UInt32], width: Int) {
-    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil), let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-        throw CocoaError(.fileReadCorruptFile, userInfo: [NSFilePathErrorKey: url.path])
-    }
-    let (width, height) = (image.width, image.height)
-    var bytes = [UInt8](repeating: 0, count: width * height * 4)
-    let context = CGContext(data: &bytes, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
-                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-    context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-    let pixels = (0..<width * height).map { i -> UInt32 in
-        let a = UInt32(bytes[i * 4 + 3])
-        guard a > 0 else { return 0 }
-        func straight(_ c: UInt8) -> UInt32 { a == 255 ? UInt32(c) : min(255, (UInt32(c) * 255 + a / 2) / a) } // drawn premultiplied
-        return straight(bytes[i * 4]) << 24 | straight(bytes[i * 4 + 1]) << 16 | straight(bytes[i * 4 + 2]) << 8 | a
-    }
-    return (pixels, width)
-}
-
 extension Screen {
     /// A person's image, made the first time it's drawn; nobody, and the console says why, if it can't be made.
-    func personTexture(_ name: String) -> MTLTexture {
+    func personTexture(_ name: String) -> GPUTexture {
         guard let made = madePerson(name) else { return clear }
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: made.width, height: made.height, mipmapped: false)
-        guard made.width > 0, made.height > 0, let texture = loader.device.makeTexture(descriptor: descriptor) else { return clear }
         let bytes = made.pixels.map(\.bigEndian) // memory order R, G, B, A
-        bytes.withUnsafeBytes { texture.replace(region: MTLRegionMake2D(0, 0, made.width, made.height), mipmapLevel: 0, withBytes: $0.baseAddress!,
-                                                bytesPerRow: made.width * 4) }
+        guard let texture = bytes.withUnsafeBytes({ gpu.texture(rgba: $0, width: made.width, height: made.height) }) else { return clear }
         textures[name] = texture
         return texture
     }

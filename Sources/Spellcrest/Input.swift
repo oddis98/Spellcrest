@@ -1,7 +1,4 @@
-#if os(macOS)
-import Carbon.HIToolbox // kVK_ key codes
-#endif
-import GameController
+import Foundation
 
 /// A virtual gamepad. Keyboard: arrows or WASD, Z or Space = a, X = b, C = x, V = y, Return or Escape = start.
 /// Game controllers: d-pad or left stick, A, B, X, Y, Menu. On iOS, also the touch controls over the game.
@@ -102,12 +99,6 @@ public enum Button: Sendable, CaseIterable {
         case controller
         /// The touch controls, or a finger on the game.
         case touch
-
-        #if os(iOS)
-        static let standard = Device.touch
-        #else
-        static let standard = Device.keyboard
-        #endif
     }
 
     /// A key on a Mac's keyboard or an iPad's, for `held(key:)` and the others: its letters, digits, Escape, Tab, Shift,
@@ -146,11 +137,10 @@ public enum Button: Sendable, CaseIterable {
     static var click: Vector? // where it went down, until an update sees it, so a click between two updates counts
     static var pad: Set<Button> = [] // a controller's, as the last update read them
     static var pushed: Set<Button> = [] // its buttons that went down since, which its handler hears, so a tap counts
-    static weak var heard: GCExtendedGamepad? // the controller whose handler that is
     static var stickPushed = false // its stick past the dead zone, at the last update
 
-    #if os(macOS)
-    /// Key codes held right now, fed by GameView or the editor's preview.
+    /// Key codes held right now, the platform's own (`keyMap`, `keyNames`), fed by the game's window or view, or the
+    /// editor's preview.
     static var keys: Set<Int> = [] {
         didSet {
             let new = keys.subtracting(oldValue)
@@ -159,28 +149,6 @@ public enum Button: Sendable, CaseIterable {
         }
     }
     static var struck: Set<Int> = [] // gone down since the last update, so a key tapped between two counts
-
-    static let keyMap: [Int: Button] = [
-        kVK_LeftArrow: .left, kVK_ANSI_A: .left, kVK_RightArrow: .right, kVK_ANSI_D: .right,
-        kVK_UpArrow: .up, kVK_ANSI_W: .up, kVK_DownArrow: .down, kVK_ANSI_S: .down,
-        kVK_ANSI_Z: .a, kVK_Space: .a, kVK_ANSI_X: .b, kVK_ANSI_C: .x, kVK_ANSI_V: .y, kVK_Return: .start, kVK_Escape: .start,
-    ]
-
-    static let keyNames: [Int: Key] = [
-        kVK_ANSI_A: .a, kVK_ANSI_B: .b, kVK_ANSI_C: .c, kVK_ANSI_D: .d, kVK_ANSI_E: .e, kVK_ANSI_F: .f, kVK_ANSI_G: .g,
-        kVK_ANSI_H: .h, kVK_ANSI_I: .i, kVK_ANSI_J: .j, kVK_ANSI_K: .k, kVK_ANSI_L: .l, kVK_ANSI_M: .m, kVK_ANSI_N: .n,
-        kVK_ANSI_O: .o, kVK_ANSI_P: .p, kVK_ANSI_Q: .q, kVK_ANSI_R: .r, kVK_ANSI_S: .s, kVK_ANSI_T: .t, kVK_ANSI_U: .u,
-        kVK_ANSI_V: .v, kVK_ANSI_W: .w, kVK_ANSI_X: .x, kVK_ANSI_Y: .y, kVK_ANSI_Z: .z,
-        kVK_ANSI_0: .zero, kVK_ANSI_1: .one, kVK_ANSI_2: .two, kVK_ANSI_3: .three, kVK_ANSI_4: .four,
-        kVK_ANSI_5: .five, kVK_ANSI_6: .six, kVK_ANSI_7: .seven, kVK_ANSI_8: .eight, kVK_ANSI_9: .nine,
-        kVK_Escape: .escape, kVK_Tab: .tab, kVK_Shift: .shift, kVK_RightShift: .shift, kVK_Space: .space, kVK_Return: .return,
-        kVK_Delete: .delete, kVK_LeftArrow: .left, kVK_RightArrow: .right, kVK_UpArrow: .up, kVK_DownArrow: .down,
-    ]
-
-    /// Each Shift's bit in a key event's modifier flags, the left's and the right's apart (NX_DEVICELSHIFTKEYMASK and
-    /// NX_DEVICERSHIFTKEYMASK), since they come as a change of the flags rather than as keys going down.
-    static let shiftBits: [Int: UInt] = [kVK_Shift: 0x2, kVK_RightShift: 0x4]
-    #else
     /// Held on the touch controls.
     static var touched: Set<Button> = [] {
         didSet {
@@ -194,33 +162,7 @@ public enum Button: Sendable, CaseIterable {
     static var touchStick = Vector.zero {
         didSet { if touchStick != .zero { using = .touch } }
     }
-    /// Held on a keyboard, fed by GameViewController.
-    static var keys: Set<GCKeyCode> = [] {
-        didSet {
-            let new = keys.subtracting(oldValue)
-            struck.formUnion(new)
-            if !new.isEmpty { using = .keyboard }
-        }
-    }
-    static var struck: Set<GCKeyCode> = [] // gone down since the last update
     static var hardware = false // a keyboard or controller held something in the last update, so the touch controls hide
-
-    static let keyMap: [GCKeyCode: Button] = [ // an iPad's keyboard, or the Mac's in the editor's preview
-        .leftArrow: .left, .keyA: .left, .rightArrow: .right, .keyD: .right, .upArrow: .up, .keyW: .up,
-        .downArrow: .down, .keyS: .down, .keyZ: .a, .spacebar: .a, .keyX: .b, .keyC: .x, .keyV: .y, .returnOrEnter: .start,
-        .escape: .start,
-    ]
-
-    static let keyNames: [GCKeyCode: Key] = [
-        .keyA: .a, .keyB: .b, .keyC: .c, .keyD: .d, .keyE: .e, .keyF: .f, .keyG: .g, .keyH: .h, .keyI: .i, .keyJ: .j,
-        .keyK: .k, .keyL: .l, .keyM: .m, .keyN: .n, .keyO: .o, .keyP: .p, .keyQ: .q, .keyR: .r, .keyS: .s, .keyT: .t,
-        .keyU: .u, .keyV: .v, .keyW: .w, .keyX: .x, .keyY: .y, .keyZ: .z,
-        .zero: .zero, .one: .one, .two: .two, .three: .three, .four: .four, .five: .five, .six: .six, .seven: .seven,
-        .eight: .eight, .nine: .nine,
-        .escape: .escape, .tab: .tab, .leftShift: .shift, .rightShift: .shift, .spacebar: .space, .returnOrEnter: .return,
-        .deleteOrBackspace: .delete, .leftArrow: .left, .rightArrow: .right, .upArrow: .up, .downArrow: .down,
-    ]
-    #endif
 
     /// The mouse or the pointer's finger at `pixel`, which may be off the canvas, with its button or the finger `down`,
     /// or nil once it's gone. It's held while down on the canvas, and a drag off it stays held, on its edge.
@@ -230,11 +172,7 @@ public enum Button: Sendable, CaseIterable {
         if isDown, !down, inside { click = pixel }
         down = isDown && pixel != nil && (down || inside)
         mouse = down ? pixel?.clamped(lowerBound: .zero, upperBound: edge) : inside ? pixel : nil
-        #if os(iOS)
-        if pixel != nil { using = .touch }
-        #else
-        if pixel != nil { using = .keyboard }
-        #endif
+        if pixel != nil { using = Device.standard } // a finger where there are touch controls, else the mouse
     }
 
     /// Runs before each update. What went down since the last one counts as pressed now, though it's up again: a key,
@@ -242,12 +180,7 @@ public enum Button: Sendable, CaseIterable {
     static func poll() {
         before = now
         keysBefore = keysNow
-        var held: Set<Button> = [], stick = Vector.zero // a game controller's
-        if let gamepad = GCController.current?.extendedGamepad {
-            hear(gamepad)
-            held = buttons(of: gamepad)
-            stick = [Double(gamepad.leftThumbstick.xAxis.value), -Double(gamepad.leftThumbstick.yAxis.value)]
-        }
+        var (held, stick) = controller() // a game controller's, the platform's (Apple/Controllers.swift)
         let stickNow = length(stick) > deadZone
         if !held.subtracting(pad).isEmpty || !pushed.isEmpty || stickNow && !stickPushed { using = .controller }
         (pad, stickPushed) = (held, stickNow)
@@ -256,14 +189,10 @@ public enum Button: Sendable, CaseIterable {
         let typed = keys.union(struck)
         struck = []
         keysNow = Set(typed.compactMap { keyNames[$0] })
-        #if os(macOS)
-        now = held.union(typed.compactMap { keyMap[$0] })
-        #else
         hardware = !keys.isEmpty || !pad.isEmpty
-        now = held.union(touched).union(tapped).union(typed.compactMap { keyMap[$0] })
+        now = held.union(touched).union(tapped).union(typed.compactMap { keyMap[$0] }) // the touch controls' too, where there are some
         tapped = []
         if !stickNow { stick = touchStick } // the touch controls' stick, when a controller's isn't pushed
-        #endif
         pointer = click ?? mouse
         if down || click != nil { now.insert(.pointer) }
         click = nil
@@ -294,32 +223,5 @@ public enum Button: Sendable, CaseIterable {
         if abs(stick.x) > far * 0.38 { held.insert(stick.x < 0 ? .left : .right) } // 0.38 ≈ sin 22.5°
         if abs(stick.y) > far * 0.38 { held.insert(stick.y < 0 ? .up : .down) }
         return held
-    }
-
-    /// What a controller holds: its D-pad, or its left stick past half way, as the D-pad's buttons, and A, B, X, Y and Menu.
-    nonisolated static func buttons(of gamepad: GCExtendedGamepad) -> Set<Button> {
-        var held: Set<Button> = []
-        let (x, y) = (gamepad.leftThumbstick.xAxis.value, gamepad.leftThumbstick.yAxis.value)
-        if gamepad.dpad.left.isPressed || x < -0.5 { held.insert(.left) }
-        if gamepad.dpad.right.isPressed || x > 0.5 { held.insert(.right) }
-        if gamepad.dpad.up.isPressed || y > 0.5 { held.insert(.up) }
-        if gamepad.dpad.down.isPressed || y < -0.5 { held.insert(.down) }
-        if gamepad.buttonA.isPressed { held.insert(.a) }
-        if gamepad.buttonB.isPressed { held.insert(.b) }
-        if gamepad.buttonX.isPressed { held.insert(.x) }
-        if gamepad.buttonY.isPressed { held.insert(.y) }
-        if gamepad.buttonMenu.isPressed { held.insert(.start) }
-        return held
-    }
-
-    /// Hears a controller's buttons as they change, on the main queue (`GCController.handlerQueue`'s own), so one pressed
-    /// and let go between two updates still counts at the next.
-    private static func hear(_ gamepad: GCExtendedGamepad) {
-        guard gamepad !== heard else { return }
-        heard = gamepad
-        gamepad.valueChangedHandler = { gamepad, _ in
-            let held = buttons(of: gamepad)
-            MainActor.assumeIsolated { pushed.formUnion(held) }
-        }
     }
 }

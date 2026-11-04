@@ -1,5 +1,4 @@
-import ImageIO
-import MetalKit
+import Foundation
 import SpellcrestProtocol
 import Synchronization
 
@@ -8,29 +7,28 @@ import Synchronization
     /// The canvas's size in pixels, the game's `resolution`, or what it asked for the display it's on
     /// (`Game.resolution(for:)`): for laying out a HUD.
     public private(set) var size: Size
-    let device: MTLDevice
-    let library: MTLLibrary // the engine's shaders
-    let pipeline: MTLRenderPipelineState // sprites, blended by their alpha, lit as `lighting` says
-    let glowing: MTLRenderPipelineState // sprites that glow (`Sprite.glows`), added to what's under them, unlit
-    let smooth: MTLRenderPipelineState // the canvas on the screen, scaled the last little way with linear filtering
-    let parallax: MTLRenderPipelineState // backdrops and overhangs, their images repeated and swaying
-    let fogged: MTLRenderPipelineState // fog over the world, as thick as its map says
+    let gpu: GPU
+    let pipeline: GPUPipeline // sprites, blended by their alpha, lit as `lighting` says
+    let glowing: GPUPipeline // sprites that glow (`Sprite.glows`), added to what's under them, unlit
+    let smooth: GPUPipeline // the canvas on the screen, scaled the last little way with linear filtering
+    let parallax: GPUPipeline // backdrops and overhangs, their images repeated and swaying
+    let fogged: GPUPipeline // fog over the world, as thick as its map says
     /// The light maps' pipelines, made in the background as the screen is, so a game's first lit frame, at dusk, say,
     /// doesn't wait for them; or then, if it comes first.
     var lightStates: LightStates {
-        if made == nil { made = LightStates(library, device) }
+        if made == nil { made = LightStates(gpu) }
         return made!
     }
     private var made: LightStates?
     /// The particles' pipelines, made in the background as the light maps' are.
     var particleStates: ParticleStates {
-        if madeParticles == nil { madeParticles = ParticleStates(library, format: canvasDescriptor.pixelFormat) }
+        if madeParticles == nil { madeParticles = ParticleStates(gpu, format: canvasFormat) }
         return madeParticles!
     }
     private var madeParticles: ParticleStates?
     /// The bloom's and the bends' pipelines, made in the background as the light maps' are.
     var glowStates: GlowStates {
-        if madeGlow == nil { madeGlow = GlowStates(library, format: canvasDescriptor.pixelFormat) }
+        if madeGlow == nil { madeGlow = GlowStates(gpu, format: canvasFormat) }
         return madeGlow!
     }
     private var madeGlow: GlowStates?
@@ -38,58 +36,53 @@ import Synchronization
     /// where in the view light past daylight shows, which blooms too, nil where none does; and the bloom's two maps and
     /// the bends' map.
     var blooming = false, glowed: [Glowed] = [], pastDaylight: SIMD4<Float>?
-    var bloomMap: MTLTexture?, bloomSpare: MTLTexture?, bendMap: MTLTexture?
+    var bloomMap: GPUTexture?, bloomSpare: GPUTexture?, bendMap: GPUTexture?
     /// How many times the game's size the canvas is drawn at, a whole number: at 1 everything is on the game's whole
     /// pixels, at k on k-ths of them, so what moves between them is drawn where it is (`GameView` sets it for the screen).
     private(set) var scale = 1
-    private(set) var canvas: MTLTexture
-    let canvasDescriptor: MTLTextureDescriptor
+    private(set) var canvas: GPUTexture
+    let canvasFormat: PixelFormat
     /// The last frame before a dissolve, which it draws over the next scene, and a second canvas that a game's effects
     /// draw into from the first (`apply`): the canvas's size, made again when it changes.
-    var snapshot: MTLTexture {
+    var snapshot: GPUTexture {
         get { canvasSized(&lastFrame) }
         set { lastFrame = newValue }
     }
-    var spare: MTLTexture { canvasSized(&other) }
-    private var lastFrame: MTLTexture?, other: MTLTexture?
+    var spare: GPUTexture { canvasSized(&other) }
+    private var lastFrame: GPUTexture?, other: GPUTexture?
     /// How far the frame is from the last update to the next, from 0 to 1, for where entities are drawn (`Entity.drawnAt`).
     var alpha = 1.0
     /// The scene's time in seconds, between updates as the entities are, for what moves: clouds, fog, swaying, shaders.
     var time = 0.0
-    let loader: MTKTextureLoader
-    var textures: [String: MTLTexture] = [:]
+    var textures: [String: GPUTexture] = [:]
     var sheets: [String: SheetFile?] = [:] // nil: the image has no .json, so it's a single frame
     var fonts: [String: Font] = [:] // image fonts, measured on first use
     var modified: [String: Date?] = [:] // each loaded file's modification date, to spot edits
     var wearing: [String: Set<String>] = [:] // the people made of each part, and of the kit, by their images' names
     var warned: Set<String> = []
-    var commands: MTLCommandBuffer!
+    var commands: GPUCommands!
     /// The pass quads go to now: the canvas's, a light map's, or the drawable's.
     private(set) var current: Pass!
-    private var open: MTLRenderCommandEncoder? // its encoder, begun as the first quad reaches it
-    var drawing: MTLRenderPipelineState? // the pipeline `open` draws with, which particles' draws set too
+    private var open: GPURenderEncoder? // its encoder, begun as the first quad reaches it
+    var drawing: GPUPipeline? // the pipeline `open` draws with, which particles' draws set too
     /// The pass's encoder, begun now if it hasn't been: a pass begun but never drawn in still clears.
-    var encoder: MTLRenderCommandEncoder { open ?? opened() }
+    var encoder: GPURenderEncoder { open ?? opened() }
     // Queued quads, all with `batch`'s texture, pipeline and values, five for each corner: x, y, u, v; the tint r, g, b,
     // a; and what the fragments make of it (`Corner` in the shaders).
     var vertices: [SIMD4<Float>] = []
-    var batch: (texture: MTLTexture, state: MTLRenderPipelineState, values: [Float]?, normals: MTLTexture?)?
+    var batch: (texture: GPUTexture, state: GPUPipeline, values: [Float]?, normals: GPUTexture?)?
     /// How the scene being drawn shapes its light, which lit sprites and tiles show (`Scene.shaping`).
     var shaping: Shaping = []
     /// The built-in font's glyphs, made on first use.
-    lazy var builtInFont = Font.builtInTexture(device)
+    lazy var builtInFont = Font.builtInTexture(gpu)
     /// One white pixel, which `fill` stretches and tints.
-    lazy var white: MTLTexture = pixel(UInt32.max)
+    lazy var white: GPUTexture = pixel(UInt32.max)
     /// One clear pixel, which a missing image draws as.
-    lazy var clear: MTLTexture = pixel(0)
+    lazy var clear: GPUTexture = pixel(0)
     /// The images that are missing or can't be read, drawn as `clear`.
     var missing: Set<String> = []
 
-    private func pixel(_ rgba: UInt32) -> MTLTexture {
-        let texture = device.makeTexture(descriptor: .texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 1, height: 1, mipmapped: false))!
-        texture.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: [rgba], bytesPerRow: 4)
-        return texture
-    }
+    private func pixel(_ rgba: UInt32) -> GPUTexture { [rgba].withUnsafeBytes { gpu.texture(rgba: $0, width: 1, height: 1)! } }
     /// Subtracted from every position; the scene sets it to its camera.
     var offset = Vector.zero
     /// How what's drawn now is lit by the scene's light maps, and where it stands, for `.standing`, in world pixels.
@@ -103,39 +96,26 @@ import Synchronization
     var view: [Float] = []
     /// The light maps, made the first time a scene is lit, and what's opaque, grown to the shadows' margin as needed.
     var maps: LightMaps?
-    var mask: MTLTexture?
+    var mask: GPUTexture?
     /// The game's own shaders, by name and kind, as they compile (Shader.swift).
     var shaders: [ShaderKey: Compiled] = [:]
 
-    init(size: Size, device: MTLDevice, format: MTLPixelFormat) {
+    init(size: Size, gpu: GPU, format: PixelFormat) {
         self.size = size
-        self.device = device
-        loader = MTKTextureLoader(device: device)
-
-        let library: MTLLibrary
-        do { library = try device.makeLibrary(source: shaderCommon + shapingShaders + shaderEngine + lightShaders + particleShaders + glowShaders, options: nil) } catch {
-            fatalError("Spellcrest: its shaders don't compile: \(error)")
+        self.gpu = gpu
+        func state(_ fragment: String, rgb: (BlendFactor, BlendFactor), alpha: (BlendFactor, BlendFactor)) -> GPUPipeline {
+            gpu.pipeline(fragment, formats: [format], rgb: rgb, alpha: alpha)
         }
-        self.library = library
-        func state(_ fragment: String, rgb: (MTLBlendFactor, MTLBlendFactor), alpha: (MTLBlendFactor, MTLBlendFactor)) -> MTLRenderPipelineState {
-            makeState(library, fragment, formats: [format], rgb: rgb, alpha: alpha)
-        }
-        pipeline = makeState(library, "spriteFragment", vertex: "litVertex", formats: [format], rgb: (.sourceAlpha, .oneMinusSourceAlpha),
-                             alpha: (.one, .oneMinusSourceAlpha))
+        pipeline = gpu.pipeline("spriteFragment", vertex: "litVertex", formats: [format], rgb: (.sourceAlpha, .oneMinusSourceAlpha),
+                                alpha: (.one, .oneMinusSourceAlpha))
         glowing = state("glowFragment", rgb: (.one, .one), alpha: (.zero, .one))
         smooth = state("smoothFragment", rgb: (.one, .zero), alpha: (.one, .zero))
         parallax = state("parallaxFragment", rgb: (.sourceAlpha, .oneMinusSourceAlpha), alpha: (.one, .oneMinusSourceAlpha))
         fogged = state("fogFragment", rgb: (.sourceAlpha, .oneMinusSourceAlpha), alpha: (.zero, .one))
 
-        let texture = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: format, width: size.width, height: size.height, mipmapped: false)
-        texture.usage = [.renderTarget, .shaderRead]
-        texture.storageMode = .private
-        (canvasDescriptor, canvas) = (texture, device.makeTexture(descriptor: texture)!)
-        let handed = Handed(value: (library, device))
+        (canvasFormat, canvas) = (format, gpu.texture(format, width: size.width, height: size.height))
         DispatchQueue.global(qos: .userInitiated).async {
-            let states = Handed(value: (LightStates(handed.value.0, handed.value.1), ParticleStates(handed.value.0, format: format),
-                                        GlowStates(handed.value.0, format: format)))
+            let states = Handed(value: (LightStates(gpu), ParticleStates(gpu, format: format), GlowStates(gpu, format: format)))
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     if self.made == nil { self.made = states.value.0 }
@@ -150,8 +130,7 @@ import Synchronization
     func resize(to scale: Int) {
         guard scale != self.scale else { return }
         self.scale = scale
-        (canvasDescriptor.width, canvasDescriptor.height) = (size.width * scale, size.height * scale)
-        canvas = device.makeTexture(descriptor: canvasDescriptor)!
+        canvas = gpu.texture(canvasFormat, width: size.width * scale, height: size.height * scale)
         (lastFrame, other) = (nil, nil)
     }
 
@@ -160,16 +139,15 @@ import Synchronization
     func resize(canvas size: Size) {
         guard size != self.size else { return }
         self.size = size
-        (canvasDescriptor.width, canvasDescriptor.height) = (size.width * scale, size.height * scale)
-        canvas = device.makeTexture(descriptor: canvasDescriptor)!
+        canvas = gpu.texture(canvasFormat, width: size.width * scale, height: size.height * scale)
         (lastFrame, other) = (nil, nil)
     }
 
     /// Makes the spare the canvas and the canvas the spare, once an effect has drawn the picture into the spare.
     func turnOver() { (canvas, other) = (spare, canvas) }
 
-    private func canvasSized(_ texture: inout MTLTexture?) -> MTLTexture {
-        if texture == nil { texture = device.makeTexture(descriptor: canvasDescriptor)! }
+    private func canvasSized(_ texture: inout GPUTexture?) -> GPUTexture {
+        if texture == nil { texture = gpu.texture(canvasFormat, width: size.width * scale, height: size.height * scale) }
         return texture!
     }
 
@@ -254,7 +232,7 @@ import Synchronization
     /// Draws an isometric map's layers as the floor: each cell's tile a frame of its tileset, twice as wide as the cell,
     /// its bottom on the bottom of the cell's diamond, so a frame taller than the diamond reaches up above it. Cells go
     /// from the back of the view to its front, only those whose frames show any of it.
-    func drawIsometric(_ map: Tilemap, layers: [Int], texture: MTLTexture, frames: [Int: Int], normals: MTLTexture?) {
+    func drawIsometric(_ map: Tilemap, layers: [Int], texture: GPUTexture, frames: [Int: Int], normals: GPUTexture?) {
         let cell = Double(map.tileSize)
         let frame = sheet(map.tileset).map { Size($0.frameWidth, $0.frameHeight) } ?? Size(map.tileSize * 2, map.tileSize)
         let cells = map.isometricCells(left: offset.x, top: offset.y, right: offset.x + Double(size.width), bottom: offset.y + Double(size.height), frame: frame)
@@ -314,32 +292,28 @@ import Synchronization
     }
 
     /// Queues a texture the canvas's size over all of it, with no camera: the snapshot, the canvas itself.
-    func whole(_ texture: MTLTexture, keep: Double = 1) {
+    func whole(_ texture: GPUTexture, keep: Double = 1) {
         quad(texture, x: 0, y: 0, source: Rect(x: 0, y: 0, width: texture.width, height: texture.height), size: size, keep: keep)
     }
 
     /// Copies the canvas as it is, still the last frame, for a dissolve to draw over the next scene.
-    func snap(_ commands: MTLCommandBuffer) {
-        guard let blit = commands.makeBlitCommandEncoder() else { return }
-        blit.copy(from: canvas, to: snapshot)
-        blit.endEncoding()
-    }
+    func snap(_ commands: GPUCommands) { commands.copy(canvas, to: snapshot) }
 
     /// The `index`th `size` region of a sheet, counting left to right, then top to bottom.
-    func region(_ index: Int, _ size: Size, in texture: MTLTexture) -> Rect {
+    func region(_ index: Int, _ size: Size, in texture: GPUTexture) -> Rect {
         let columns = max(1, texture.width / size.width)
         return Rect(x: index % columns * size.width, y: index / columns * size.height, width: size.width, height: size.height)
     }
 
     /// The image `name`, loaded the first time it's drawn. One that's missing or can't be read draws nothing, and the
     /// console says why, once, so the game goes on; where files can change, it's loaded once its file is there.
-    func texture(_ name: String) -> MTLTexture {
+    func texture(_ name: String) -> GPUTexture {
         if let texture = textures[name] { return texture }
         if name.hasPrefix(Person.prefix) { return personTexture(name) }
         let url = assetURL("\(name).png")
         modified["\(name).png"] = modificationDate(url)
         do {
-            let texture = try loader.newTexture(URL: url, options: [.SRGB: false])
+            let texture = try image(url)
             textures[name] = texture
             return texture
         } catch {
@@ -378,7 +352,7 @@ import Synchronization
             let name = (file as NSString).deletingPathExtension
             if file.hasSuffix(".json") {
                 (sheets[name], fonts[name]) = (nil, nil) // read again on next use
-            } else if let texture = try? loader.newTexture(URL: url, options: [.SRGB: false]) {
+            } else if let texture = try? image(url) {
                 (textures[name], fonts[name]) = (texture, nil)
                 missing.remove(name)
             }
@@ -391,9 +365,9 @@ import Synchronization
     /// says, unless it `glows`, through `state` with `values` (a game's shader), or the pass's usual pipeline. `frame` is
     /// where a sprite's frame is in the texture, for a shader's positions, or with a `rim`, its size. Lit, it turns toward
     /// its light by its `normals`, a normal map, or by a `rim` on its edges.
-    func quad(_ texture: MTLTexture, x: Double, y: Double, source s: Rect, size: Size? = nil, flip: Bool = false, color: UInt32 = 0xFFFFFF,
-              opacity: Double = 1, flash: Double = 0, keep: Double = 1, glows: Bool = false, state: MTLRenderPipelineState? = nil,
-              values: [Float]? = nil, frame: SIMD2<Float> = .zero, normals: MTLTexture? = nil, rim: Bool = false) {
+    func quad(_ texture: GPUTexture, x: Double, y: Double, source s: Rect, size: Size? = nil, flip: Bool = false, color: UInt32 = 0xFFFFFF,
+              opacity: Double = 1, flash: Double = 0, keep: Double = 1, glows: Bool = false, state: GPUPipeline? = nil,
+              values: [Float]? = nil, frame: SIMD2<Float> = .zero, normals: GPUTexture? = nil, rim: Bool = false) {
         let k = current?.grid ?? Double(scale) // corners on k-ths of a pixel, so whole pixels stay whole and the rest lands between
         let x0 = Float(((x - offset.x) * k).rounded(.down) / k), y0 = Float(((y - offset.y) * k).rounded(.down) / k)
         let (x1, y1) = (x0 + Float(size?.width ?? s.width), y0 + Float(size?.height ?? s.height))
@@ -411,9 +385,9 @@ import Synchronization
     /// Queues a quad over `box`, from x0, y0 to x1, y1 in the pass's units, its texture coordinates `uv` the same way, and
     /// the rest of its corners as given. Consecutive quads with the same texture, pipeline and values reach the GPU as
     /// one draw call.
-    func queue(_ texture: MTLTexture, _ box: SIMD4<Float>, uv: SIMD4<Float> = [0, 0, 1, 1], color: SIMD4<Float> = [1, 1, 1, 1],
-               effects: SIMD4<Float> = [0, 1, 0, 0], more: SIMD4<Float> = .zero, stand: SIMD4<Float> = .zero, state: MTLRenderPipelineState? = nil,
-               values: [Float]? = nil, normals: MTLTexture? = nil) {
+    func queue(_ texture: GPUTexture, _ box: SIMD4<Float>, uv: SIMD4<Float> = [0, 0, 1, 1], color: SIMD4<Float> = [1, 1, 1, 1],
+               effects: SIMD4<Float> = [0, 1, 0, 0], more: SIMD4<Float> = .zero, stand: SIMD4<Float> = .zero, state: GPUPipeline? = nil,
+               values: [Float]? = nil, normals: GPUTexture? = nil) {
         let (x0, y0, x1, y1) = (box[0], box[1], box[2], box[3])
         queue(texture, corners: [[x0, y0], [x1, y0], [x0, y1], [x1, y1]], uv: uv, color: color, effects: effects, more: more, stand: stand, state: state,
               values: values, normals: normals)
@@ -421,9 +395,9 @@ import Synchronization
 
     /// Queues a quad with its corners anywhere, top left, top right, bottom left and bottom right, as `queue(_:_:)` does
     /// one over a box: a diamond on an isometric floor.
-    func queue(_ texture: MTLTexture, corners c: [SIMD2<Float>], uv: SIMD4<Float> = [0, 0, 1, 1], color: SIMD4<Float> = [1, 1, 1, 1],
-               effects: SIMD4<Float> = [0, 1, 0, 0], more: SIMD4<Float> = .zero, stand: SIMD4<Float> = .zero, state: MTLRenderPipelineState? = nil,
-               values: [Float]? = nil, normals: MTLTexture? = nil) {
+    func queue(_ texture: GPUTexture, corners c: [SIMD2<Float>], uv: SIMD4<Float> = [0, 0, 1, 1], color: SIMD4<Float> = [1, 1, 1, 1],
+               effects: SIMD4<Float> = [0, 1, 0, 0], more: SIMD4<Float> = .zero, stand: SIMD4<Float> = .zero, state: GPUPipeline? = nil,
+               values: [Float]? = nil, normals: GPUTexture? = nil) {
         let state = state ?? current?.usual ?? pipeline
         if texture !== batch?.texture || state !== batch?.state || values != batch?.values || normals !== batch?.normals {
             flush()
@@ -440,32 +414,31 @@ import Synchronization
         if let batch, !vertices.isEmpty {
             let encoder = self.encoder
             if drawing !== batch.state {
-                encoder.setRenderPipelineState(batch.state)
+                encoder.setPipeline(batch.state)
                 drawing = batch.state
             }
-            let buffer = device.makeBuffer(bytes: vertices, length: vertices.count * MemoryLayout<SIMD4<Float>>.stride)
+            let buffer = vertices.withUnsafeBytes { gpu.buffer($0) }
             encoder.setVertexBuffer(buffer, offset: 0, index: 0)
             encoder.setFragmentTexture(batch.texture, index: 0)
             encoder.setFragmentTexture(batch.normals ?? white, index: 5) // its normal map, for light that shapes it
-            if let values = batch.values { encoder.setFragmentBytes(values, length: values.count * MemoryLayout<Float>.stride, index: 1) }
-            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: vertices.count / 5)
+            if let values = batch.values { encoder.setFragmentBytes(values, index: 1) }
+            encoder.draw(vertices: vertices.count / 5)
         }
         vertices.removeAll(keepingCapacity: true)
         batch = nil
     }
 
     /// Begins a frame's pass on `commands`: the canvas's, or the drawable's (`state` then the canvas drawn on it).
-    func begin(_ commands: MTLCommandBuffer, _ descriptor: MTLRenderPassDescriptor, _ state: MTLRenderPipelineState? = nil) {
+    func begin(_ commands: GPUCommands, _ targets: Targets, _ state: GPUPipeline? = nil) {
         self.commands = commands
         (lit, view) = (false, makeView(origin: .zero, maps: Size(1, 1), ambient: [1, 1, 1]))
-        go(Pass(descriptor: descriptor, usual: state ?? pipeline, grid: Double(scale), size: size, textures: [white, white, white, white]))
+        go(Pass(targets: targets, usual: state ?? pipeline, grid: Double(scale), size: size, textures: [white, white, white, white]))
     }
 
     /// Ends the pass under way, if it's begun, keeping what it drew, and goes on with `pass`, which begins as the first
     /// quad reaches it.
     func go(_ pass: Pass) {
         interrupt()
-        for i in 0..<8 where pass.descriptor.colorAttachments[i].texture != nil { pass.descriptor.colorAttachments[i].storeAction = .store }
         current = pass
     }
 
@@ -474,17 +447,17 @@ import Synchronization
     func interrupt() {
         flush()
         guard let open else { return }
-        open.endEncoding()
+        open.end()
         self.open = nil
-        for i in 0..<8 where current.descriptor.colorAttachments[i].texture != nil { current.descriptor.colorAttachments[i].loadAction = .load }
+        for i in current.targets.colors.indices { current.targets.colors[i].load = .load }
     }
 
-    private func opened() -> MTLRenderCommandEncoder {
-        let encoder = commands.makeRenderCommandEncoder(descriptor: current.descriptor)!
+    private func opened() -> GPURenderEncoder {
+        let encoder = commands.render(current.targets)
         (open, drawing) = (encoder, nil)
-        encoder.setVertexBytes([SIMD2<Float>(Float(current.size.width), Float(current.size.height))], length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
-        encoder.setVertexBytes(view, length: view.count * MemoryLayout<Float>.stride, index: 2) // for `litVertex`
-        encoder.setFragmentBytes(view, length: view.count * MemoryLayout<Float>.stride, index: 0)
+        encoder.setVertexBytes([SIMD2<Float>(Float(current.size.width), Float(current.size.height))], index: 1)
+        encoder.setVertexBytes(view, index: 2) // for `litVertex`
+        encoder.setFragmentBytes(view, index: 0)
         for (i, texture) in current.textures.enumerated() {
             encoder.setFragmentTexture(texture, index: i + 1)
             encoder.setVertexTexture(texture, index: i + 1)
@@ -496,8 +469,8 @@ import Synchronization
         flush()
         // A pass that would only load its texture and store it again, as the canvas's after a game's effects with nothing
         // drawn since, isn't begun: on an iPhone that's the whole 9-times canvas read and written for nothing.
-        if open == nil, current.descriptor.colorAttachments[0].loadAction == .load { return }
-        encoder.endEncoding()
+        if open == nil, current.targets.colors[0].load == .load { return }
+        encoder.end()
         open = nil
     }
 
@@ -527,37 +500,15 @@ import Synchronization
         case raised = 5
     }
 
-    /// A render pass quads go to: its descriptor, the pipeline they draw with unless they say, the grid their corners land
+    /// A render pass quads go to: its targets, the pipeline they draw with unless they say, the grid their corners land
     /// on (`grid`-ths of a pixel), the size their positions are given in, over all of its textures, and the textures bound
     /// for every quad's fragments from index 1.
     struct Pass {
-        var descriptor: MTLRenderPassDescriptor
-        var usual: MTLRenderPipelineState
+        var targets: Targets
+        var usual: GPUPipeline
         var grid = 1.0
         var size: Size
-        var textures: [MTLTexture] = []
-    }
-}
-
-/// A pipeline from `library`'s `vertex` and `fragment` functions, drawing into textures of `formats`, each blended the
-/// same way: `rgb`'s and `alpha`'s factors, with `operation`; those `masked` it leaves as they are.
-func makeState(_ library: MTLLibrary, _ fragment: String, vertex: String = "spriteVertex", formats: [MTLPixelFormat], rgb: (MTLBlendFactor, MTLBlendFactor),
-               alpha: (MTLBlendFactor, MTLBlendFactor), operation: (rgb: MTLBlendOperation, alpha: MTLBlendOperation) = (.add, .add),
-               masked: [Int] = []) -> MTLRenderPipelineState {
-    let pipeline = MTLRenderPipelineDescriptor()
-    pipeline.vertexFunction = library.makeFunction(name: vertex)
-    pipeline.fragmentFunction = library.makeFunction(name: fragment)
-    for (i, format) in formats.enumerated() {
-        let color = pipeline.colorAttachments[i]!
-        color.pixelFormat = format
-        color.isBlendingEnabled = true
-        (color.sourceRGBBlendFactor, color.destinationRGBBlendFactor) = rgb
-        (color.sourceAlphaBlendFactor, color.destinationAlphaBlendFactor) = alpha
-        (color.rgbBlendOperation, color.alphaBlendOperation) = operation
-        if masked.contains(i) { color.writeMask = [] }
-    }
-    do { return try library.device.makeRenderPipelineState(descriptor: pipeline) } catch {
-        fatalError("Spellcrest: can't make the pipeline for \(fragment): \(error)")
+        var textures: [GPUTexture] = []
     }
 }
 
@@ -566,22 +517,21 @@ func tint(_ color: UInt32, _ opacity: Double = 1) -> SIMD4<Float> {
     [Float(color >> 16 & 0xFF) / 255, Float(color >> 8 & 0xFF) / 255, Float(color & 0xFF) / 255, Float(opacity)]
 }
 
-/// A color, 0xRRGGBB, to clear a render pass to.
-func clearColor(_ rgb: UInt32) -> MTLClearColor {
-    MTLClearColor(red: Double(rgb >> 16 & 0xFF) / 255, green: Double(rgb >> 8 & 0xFF) / 255, blue: Double(rgb & 0xFF) / 255, alpha: 1)
+/// A pass's texture cleared to a color, 0xRRGGBB.
+func clearColor(_ rgb: UInt32) -> Load {
+    .clear(red: Double(rgb >> 16 & 0xFF) / 255, green: Double(rgb >> 8 & 0xFF) / 255, blue: Double(rgb & 0xFF) / 255, alpha: 1)
 }
 
 /// The biggest scale of `canvas` that fits in `drawable`, so on a phone the game reaches the screen's edges: at the top
 /// when the screen is taller than wide, below `top` (the safe area's inset there, the Dynamic Island's, in the
 /// drawable's units), leaving the rest to the touch controls, and centered otherwise. Not a whole number, so the
 /// canvas, drawn at the nearest whole one (`canvasScale`), is scaled the rest of the way smoothly.
-func fit(_ canvas: Size, in drawable: CGSize, top: Double = 0) -> MTLViewport {
+func fit(_ canvas: Size, in drawable: CGSize, top: Double = 0) -> Viewport {
     let upright = drawable.height > drawable.width
     let room = upright ? drawable.height - top : drawable.height
     let scale = min(drawable.width / Double(canvas.width), room / Double(canvas.height))
     let (width, height) = (Double(canvas.width) * scale, Double(canvas.height) * scale)
-    return MTLViewport(originX: (drawable.width - width) / 2, originY: upright ? top : (drawable.height - height) / 2,
-                       width: width, height: height, znear: 0, zfar: 1)
+    return Viewport(originX: (drawable.width - width) / 2, originY: upright ? top : (drawable.height - height) / 2, width: width, height: height)
 }
 
 /// How many times the game's size the canvas is drawn at for a drawable: the whole number `letterbox` scales it by, so
@@ -594,261 +544,18 @@ func canvasScale(_ canvas: Size, in drawable: CGSize, fill: Bool) -> Int {
 
 /// The canvas pixel at `point` when the canvas shows in `viewport` (`fit`'s or `letterbox`'s, in the same units, from
 /// the top left), in whole pixels, and off the canvas when the point is.
-func pixel(at point: CGPoint, in viewport: MTLViewport, canvas: Size) -> Vector {
+func pixel(at point: CGPoint, in viewport: Viewport, canvas: Size) -> Vector {
     let scale = viewport.width / Double(canvas.width)
     return [((point.x - viewport.originX) / scale).rounded(.down), ((point.y - viewport.originY) / scale).rounded(.down)]
 }
 
 /// The biggest whole-number scale of `canvas` that fits in `drawable` (at least 1x), centered.
-func letterbox(_ canvas: Size, in drawable: CGSize) -> MTLViewport {
+func letterbox(_ canvas: Size, in drawable: CGSize) -> Viewport {
     let (w, h) = (Int(drawable.width), Int(drawable.height))
     let scale = max(1, min(w / canvas.width, h / canvas.height))
     let (sw, sh) = (canvas.width * scale, canvas.height * scale)
-    return MTLViewport(
-        originX: Double((w - sw) / 2), originY: Double((h - sh) / 2),
-        width: Double(sw), height: Double(sh), znear: 0, zfar: 1)
+    return Viewport(originX: Double((w - sw) / 2), originY: Double((h - sh) / 2), width: Double(sw), height: Double(sh))
 }
-
-// Compiled at runtime, so building games doesn't need the offline Metal toolchain. What the engine's shaders and a
-// game's own share: the structs, noise, the dither, and reading the scene's light. Each line it adds to the engine's
-// library is compiled as a game starts, so keep it small.
-let shaderCommon = """
-#include <metal_stdlib>
-using namespace metal;
-
-struct Vertex {
-    float4 position [[position]]; float2 uv; float4 color [[flat]]; float4 effects [[flat]]; float4 more [[flat]];
-    float3 shade [[flat]]; // for a standing quad, the share of the light at its feet that gets through the shadows (litVertex)
-    float4 stand [[flat]]; // for one standing in an isometric picture, its footprint's front edges and its height (Screen.stand)
-};
-
-// As Screen.queue writes them: x, y in the pass's pixels (y down) and u, v texture coords; the color to multiply by;
-// then what the fragments make of it: for a sprite, how far to mix toward white (a flash), how much of a dissolve's
-// pattern to keep, how it's lit and whether it glows; its feet in world pixels and its frame's place in the texture; and
-// in an isometric picture, where it stands.
-struct Corner { float4 xyuv; float4 color; float4 effects; float4 more; float4 stand; };
-
-// How the canvas lies over the world, and the light maps under it (Screen.view).
-struct View {
-    float scale;    // the canvas's pixels to each of the game's
-    float clouds;   // 0 none, 1 dithered, 2 smooth, read between the game's pixels
-    float fog;      // 1: its thickness read between the game's pixels
-    float vignette; // 1: the open map's alpha is a vignette
-    float2 offset;  // the world pixel at the view's top left: the camera, shaken
-    float2 origin;  // the world pixel at the light maps' first texel
-    float2 size;    // the light maps' size in texels
-    float2 canvas;  // the game's size in pixels
-    float4 ambient; // the daylight's color
-};
-
-// What a game's shader is given besides its pixel: the scene's time in seconds, the canvas's size in the game's pixels,
-// and the numbers the game gave it, values[0] to values[15] (Shader in Swift).
-struct Values {
-    float time;
-    float unused;
-    float2 size;
-    float numbers[16];
-    float operator[](int i) const { return numbers[clamp(i, 0, 15)]; }
-};
-
-// The picture drawn so far, for a layer shader: layer.sample(position) is its color there, in the game's pixels.
-struct Layer {
-    texture2d<float> picture;
-    float scale;
-    half4 sample(float2 position) const {
-        constexpr sampler nearest(filter::nearest, address::clamp_to_edge);
-        return half4(picture.sample(nearest, position * scale / float2(picture.get_width(), picture.get_height())));
-    }
-};
-
-// A 4x4 ordered dither: the order a dissolve's pixels go in, and the steps of a dithered edge.
-constant float bayer[16] = {0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
-
-// Where a pixel comes in the 4x4 pattern, from 0 to 15/16.
-float order(float2 pixel) { int2 cell = int2(floor(pixel)) & 3; return bayer[cell.y * 4 + cell.x] / 16; }
-
-// The same in the middle of each step, for dithering: floor(shade * steps + dither(pixel)) / steps.
-float dither(float2 pixel) { return order(pixel) + 1.0 / 32; }
-
-float luma(float3 rgb) { return dot(rgb, float3(0.299, 0.587, 0.114)); }
-
-float hash(float2 p) {
-    float3 q = fract(float3(p.xyx) * 0.1031);
-    q += dot(q, q.yzx + 33.33);
-    return fract((q.x + q.y) * q.z);
-}
-
-// Smooth value noise from 0 to 1, changing about once a unit.
-float noise(float2 p) {
-    float2 i = floor(p), f = fract(p), u = f * f * (3 - 2 * f);
-    return mix(mix(hash(i), hash(i + float2(1, 0)), u.x), mix(hash(i + float2(0, 1)), hash(i + float2(1, 1)), u.x), u.y);
-}
-
-// Four octaves of noise, from 0 to 1: clouds, fog, smoke.
-float fbm(float2 p) {
-    float sum = 0, amplitude = 0.5;
-    for (int i = 0; i < 4; i++) {
-        sum += amplitude * noise(p);
-        p = p * 2.02 + float2(17.3, 9.1);
-        amplitude *= 0.5;
-    }
-    return sum / 0.9375;
-}
-
-// A light map at a world pixel: the texel the pixel's in, so each of the game's pixels is lit as a whole, as its art is,
-// sharp, where reading between them blurred the light's edges over a pixel.
-float4 at(texture2d<float> map, float2 world, constant View &view) {
-    return map.read(uint2(clamp(world - view.origin, float2(0), view.size - 1)));
-}
-
-// A map at a world pixel between the texels around it, for what's smooth: soft clouds and fog.
-float4 between(texture2d<float> map, float2 world, constant View &view) {
-    constexpr sampler linear(filter::linear, address::clamp_to_edge);
-    return map.sample(linear, (world - view.origin) / view.size, level(0)); // a level of its own, so a vertex function could too
-}
-
-// How much daylight the clouds leave at a world pixel, from their own map: 1 without clouds.
-float cloudy(texture2d<float> clouds, float2 world, constant View &view) {
-    if (view.clouds < 0.5) return 1;
-    return (view.clouds > 1.5 ? between(clouds, world, view) : at(clouds, world, view)).r;
-}
-
-// A color in a light: multiplied by it, and past daylight, 1, going toward the light's own white; its alpha drains it
-// toward gray.
-float3 shine(float3 rgb, float4 light) {
-    float3 l = max(light.rgb, float3(0));
-    float peak = max(l.r, max(l.g, l.b));
-    rgb = mix(rgb * l, l / max(peak, 1.0), saturate((peak - 1) * 0.55));
-    return mix(rgb, float3(luma(rgb)), saturate(light.a));
-}
-
-// Where on an isometric floor a pixel standing at `world`, in the picture, is lit from: under the point where the view's
-// ray through it meets its box (`stand`: its footprint's front edges, x1 and y1, and its height), a world pixel out from
-// the face it meets, so each face is lit from its own side; and how far up that point is. The ray's points are the
-// floor's x + y = u, at x = (u + world.x) / 2, y = (u - world.x) / 2 and a height of u / 2 - world.y, and the box's
-// nearest is where u first meets a front face or its top, never under the floor.
-float3 underfoot(float2 world, float4 stand) {
-    float right = 2 * stand.x - world.x, left = 2 * stand.y + world.x, top = 2 * world.y + 2 * stand.z;
-    float u = max(min(min(right, left), top), 2 * world.y);
-    float2 under = float2(world.x, u / 2);
-    if (u > 2 * world.y && u < top) under += right <= left ? float2(1, 0.5) : float2(-1, 0.5);
-    return float3(under, u / 2 - world.y);
-}
-
-// How much of the light past the daylight reaches a pixel `height` pixels above an isometric floor: all of it at its
-// foot, half 64 pixels up, as a lamp lights a wall's foot more than its top.
-float fade(float height) { return 1 / (1 + max(height, 0.0) / 64); }
-
-// A canvas pixel's color as the scene's light maps light it, as `mode` says (Screen.Lighting): 0 not at all; 1 by its
-// pixel's light; 2 by its pixel's without shadows; 3 standing, by that times `shade`, the share of the light at its
-// feet that gets through the shadows; 4 by daylight alone; 5 raised, by the light on an isometric floor under it, what
-// lights it past the daylight fading as it rises (`stand`). The shadowed map's alpha is how gray, the open one's the
-// vignette. The clouds have a map of their own, so they can be soft while the light is sharp: the daylight they take,
-// the ambient darkened by the vignette times their shade, comes off the light here, and the cap at daylight left room
-// for it (`capFragment`).
-float3 raised(float3 rgb, float2 pixel, float4 stand, constant View &view, texture2d<float> shadowed, texture2d<float> open,
-              texture2d<float> clouds) {
-    float3 under = underfoot(pixel / view.scale + view.offset, stand);
-    float4 here = at(shadowed, under.xy, view);
-    float left = cloudy(clouds, under.xy, view);
-    float4 sky = at(open, under.xy, view);
-    float3 taken = view.ambient.rgb * sky.a * (1 - left), daylight = view.ambient.rgb * sky.a * left;
-    return shine(rgb, float4(mix(daylight, here.rgb - taken, fade(under.z)), here.a));
-}
-
-float3 lit(float3 rgb, float mode, float3 shade, float2 pixel, constant View &view, texture2d<float> shadowed, texture2d<float> open,
-           texture2d<float> clouds, float4 stand = float4(0)) {
-    if (mode < 0.5) return rgb;
-    if (mode > 4.5) return raised(rgb, pixel, stand, view, shadowed, open, clouds);
-    float2 world = pixel / view.scale + view.offset;
-    float4 here = at(shadowed, world, view);
-    float left = cloudy(clouds, world, view);
-    float4 sky = mode > 1.5 || (left < 1 && view.vignette > 0.5) ? at(open, world, view) : float4(1);
-    float3 taken = view.ambient.rgb * sky.a * (1 - left);
-    if (mode < 1.5) return shine(rgb, float4(here.rgb - taken, here.a));
-    if (mode > 3.5) return shine(rgb, float4(view.ambient.rgb * sky.a * left, here.a));
-    return shine(rgb, float4((sky.rgb - taken) * (mode > 2.5 ? shade : float3(1)), here.a));
-}
-
-Vertex corner(uint i, constant Corner *v, constant float2 &size) {
-    float2 p = v[i].xyuv.xy / size * 2 - 1;
-    return { float4(p.x, -p.y, 0, 1), v[i].xyuv.zw, v[i].color, v[i].effects, v[i].more, float3(1), v[i].stand };
-}
-
-vertex Vertex spriteVertex(uint i [[vertex_id]], constant Corner *v [[buffer(0)]], constant float2 &size [[buffer(1)]]) { return corner(i, v, size); }
-
-// The world's quads on the canvas: a standing one's share of the light at its feet (more.xy) that gets through the
-// shadows, read once a corner rather than at each of its pixels.
-vertex Vertex litVertex(uint i [[vertex_id]], constant Corner *v [[buffer(0)]], constant float2 &size [[buffer(1)]], constant View &view [[buffer(2)]],
-                        texture2d<float> shadowed [[texture(1)]], texture2d<float> open [[texture(2)]]) {
-    Vertex out = corner(i, v, size);
-    if (v[i].effects.z > 2.5 && v[i].effects.z < 3.5) {
-        out.shade = saturate(at(shadowed, v[i].more.xy, view).rgb / max(at(open, v[i].more.xy, view).rgb, float3(0.0001)));
-    }
-    return out;
-}
-
-"""
-
-// The engine's own fragments, for the canvas and the screen.
-let shaderEngine = """
-// A sprite, a tile, text or a fill: its texture's pixel times its color, mixed toward white by a flash, dropped in a
-// dissolve's pattern but for the share to keep, and lit as it says.
-fragment float4 spriteFragment(Vertex in [[stage_in]], texture2d<float> t [[texture(0)]], texture2d<float> shadowed [[texture(1)]],
-                               texture2d<float> open [[texture(2)]], texture2d<float> clouds [[texture(3)]], texture2d<float> direction [[texture(4)]],
-                               texture2d<float> normals [[texture(5)]], constant View &view [[buffer(0)]]) {
-    if (order(in.position.xy / view.scale) >= in.effects.y) discard_fragment(); // the game's pixels, at any scale
-    constexpr sampler nearest(filter::nearest);
-    float4 c = t.sample(nearest, in.uv) * in.color;
-    float3 rgb = mix(c.rgb, float3(1), saturate(in.effects.x));
-    float3 out = lit(rgb, in.effects.z, in.shade, in.position.xy, view, shadowed, open, clouds, in.stand);
-    float flip = dfdx(in.uv.x) < 0 ? -1 : 1; // mirrored, its texture's left is the screen's right
-    float2 pixel = in.position.xy; // standing in an isometric picture, the way to the light is the floor's under it, as the pixel it's drawn at
-    if (in.effects.z > 4.5) pixel = (underfoot(pixel / view.scale + view.offset, in.stand).xy - view.offset) * view.scale;
-    if (in.effects.w > 1.5) out = shaped(out, in.effects.w < 2.5, in.uv, flip, in.more.zw, pixel, t, normals, direction, view); // 2 normal map, 3 rim
-    return float4(out, c.a);
-}
-
-// A sprite that glows, added to what's under it and unlit: fire, magic, sparks.
-fragment float4 glowFragment(Vertex in [[stage_in]], texture2d<float> t [[texture(0)]], constant View &view [[buffer(0)]]) {
-    if (order(in.position.xy / view.scale) >= in.effects.y) discard_fragment();
-    constexpr sampler nearest(filter::nearest);
-    float4 c = t.sample(nearest, in.uv) * in.color;
-    return float4(mix(c.rgb, float3(1), saturate(in.effects.x)) * c.a, c.a);
-}
-
-// The canvas on the screen: at its size there pixel for pixel, or scaled the last little way, which nearest-neighbor
-// would do by making some of the game's pixels a screen pixel wider than the rest.
-fragment float4 smoothFragment(Vertex in [[stage_in]], texture2d<float> t [[texture(0)]]) {
-    constexpr sampler linear(filter::linear);
-    return t.sample(linear, in.uv);
-}
-
-// A backdrop or an overhang over the view: its image from effects.xy in the view's pixels, each row swayed up to
-// effects.z pixels by the time, effects.w; repeated across if more.x, down if more.y; lit as more.z says.
-fragment float4 parallaxFragment(Vertex in [[stage_in]], texture2d<float> t [[texture(0)]], texture2d<float> shadowed [[texture(1)]],
-                                 texture2d<float> open [[texture(2)]], texture2d<float> clouds [[texture(3)]], constant View &view [[buffer(0)]]) {
-    float2 size = float2(t.get_width(), t.get_height());
-    float2 p = in.position.xy / view.scale - in.effects.xy;
-    p.x -= sin(in.effects.w * 1.4 + floor(p.y) * 0.11) * in.effects.z;
-    if (in.more.x > 0.5) p.x -= floor(p.x / size.x) * size.x; else if (p.x < 0 || p.x >= size.x) discard_fragment();
-    if (in.more.y > 0.5) p.y -= floor(p.y / size.y) * size.y; else if (p.y < 0 || p.y >= size.y) discard_fragment();
-    float4 c = t.read(uint2(min(p, size - 1)));
-    if (c.a == 0) discard_fragment();
-    return float4(lit(c.rgb, in.more.z, float3(1), in.position.xy, view, shadowed, open, clouds), c.a);
-}
-
-// Fog over the world: its color, as thick as its map (texture 0) says at each world pixel, or between them if it's
-// smooth, lit as the ground is.
-fragment float4 fogFragment(Vertex in [[stage_in]], texture2d<float> fog [[texture(0)]], texture2d<float> shadowed [[texture(1)]],
-                            texture2d<float> open [[texture(2)]], texture2d<float> clouds [[texture(3)]], constant View &view [[buffer(0)]]) {
-    float2 world = in.position.xy / view.scale + view.offset;
-    float thick = (view.fog > 0.5 ? between(fog, world, view) : at(fog, world, view)).r;
-    if (thick <= 0) discard_fragment();
-    return float4(lit(in.color.rgb, 1, float3(1), in.position.xy, view, shadowed, open, clouds), thick);
-}
-
-"""
 
 /// Where a game file, `<name>.<extension>`, is: anywhere in `Assets`, at the top first, then in its folders by path, so
 /// games keep their sprites, maps and sounds in folders and find them by name. `Assets/Parts`, a kit of the parts
@@ -867,7 +574,7 @@ func assetURL(_ file: String) -> URL {
     }
 }
 
-private let bundledAssets = Bundle.main.url(forResource: "Assets", withExtension: nil)
+private let bundledAssets = appAssets() // the platform's (Apple/Files.swift)
 /// Whether the game's files can change while it runs, saved by the editor: not once they're inside an app, where
 /// they're signed, as on an iPhone or iPad. Only then does the loop look for files that changed.
 let assetsCanChange = bundledAssets == nil
@@ -951,11 +658,9 @@ func modificationDate(_ url: URL) -> Date? {
 func frameSize(_ name: String) -> Size? {
     if name.hasPrefix(Person.prefix) { return (try? Person.kit()).map { Size($0.frameWidth, $0.frameHeight) } } // a person's: the kit's frames
     return once(name, in: framesRead) {
-        guard let source = CGImageSourceCreateWithURL(assetURL("\(name).png") as CFURL, nil),
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let width = properties[kCGImagePropertyPixelWidth] as? Int, let height = properties[kCGImagePropertyPixelHeight] as? Int else { return nil }
+        guard let image = pngSize(assetURL("\(name).png")) else { return nil }
         let sheet = try? SheetFile(contentsOf: assetURL("\(name).json"))
-        return Size(sheet?.frameWidth ?? width, sheet?.frameHeight ?? height)
+        return Size(sheet?.frameWidth ?? image.width, sheet?.frameHeight ?? image.height)
     }
 }
 

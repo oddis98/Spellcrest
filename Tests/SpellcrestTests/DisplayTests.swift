@@ -22,7 +22,7 @@ private struct Shaped: Game {
 
 /// Resized, the canvas is made again at the new size, at its scale; the same size keeps it.
 @Test @MainActor func theCanvasFollowsItsSize() throws {
-    let screen = Screen(size: Size(328, 480), device: try #require(MTLCreateSystemDefaultDevice()), format: .bgra8Unorm)
+    let screen = Screen(size: Size(328, 480), gpu: try #require(systemGPU()), format: .bgra8)
     screen.resize(to: 2)
     screen.resize(canvas: Size(480, 328))
     #expect(screen.size == Size(480, 328) && screen.canvas.width == 960 && screen.canvas.height == 656)

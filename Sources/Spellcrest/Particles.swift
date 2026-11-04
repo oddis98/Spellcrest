@@ -1,4 +1,4 @@
-import MetalKit
+import Foundation
 
 /// How particles come out of an entity that carries it (`Entity.emitter`), or a burst of them
 /// (`Particles.burst(_:at:count:angle:sortY:)`): sparks, embers, smoke, motes, shards. Each lives a while, moving and
@@ -240,12 +240,12 @@ public struct Weather: Sendable, Equatable {
 /// drawn at once in each place among the scene's parts: on the ground, standing just behind each entity in its draw
 /// order or in front of them all, and in the air. A run is of one image, glowing or not.
 struct Laid {
-    var buffer: MTLBuffer?
+    var buffer: GPUBuffer?
     var runs: [[Run]] = []
 
     struct Run {
         let start, count: Int
-        let texture: MTLTexture
+        let texture: GPUTexture
         let glows: Bool
         var blooms = false // glows, and isn't rain, so a scene's bloom draws it again
         var box = SIMD4<Float>(.infinity, .infinity, -.infinity, -.infinity) // where its particles are, in the view's pixels
@@ -282,7 +282,7 @@ extension Screen {
 
         // Each kind as it's drawn, and its rank: those lit first, then those that glow, each image's together.
         struct Look {
-            let texture: MTLTexture, width: Int, height: Int, columns: Int, frames: Int
+            let texture: GPUTexture, width: Int, height: Int, columns: Int, frames: Int
             let colors: [UInt32], fade: Bool, glows: Bool, mode: Float, depth: Emitter.Depth
             let endSize: Int?, streak: Float, spin: Float
         }
@@ -404,7 +404,7 @@ extension Screen {
             }
         }
         guard !instances.isEmpty else { return Laid() } // all out of view
-        let buffer = device.makeBuffer(bytes: instances, length: instances.count * MemoryLayout<SIMD4<Float>>.stride)
+        let buffer = instances.withUnsafeBytes { gpu.buffer($0) }
         return Laid(buffer: buffer, runs: runs)
     }
 
@@ -419,12 +419,12 @@ extension Screen {
         for run in laid.runs[place] {
             let state = run.glows ? states.glowing : states.lit
             if drawing !== state {
-                encoder.setRenderPipelineState(state)
+                encoder.setPipeline(state)
                 drawing = state
             }
             encoder.setVertexBuffer(buffer, offset: run.start * 4 * MemoryLayout<SIMD4<Float>>.stride, index: 0)
             encoder.setFragmentTexture(run.texture, index: 0)
-            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: run.count)
+            encoder.draw(vertices: 6, instances: run.count)
         }
     }
 
@@ -493,56 +493,11 @@ extension Screen {
 
 /// The particles' pipelines: those lit, blended by their alpha, and those that glow, added.
 struct ParticleStates {
-    let lit, glowing: MTLRenderPipelineState
+    let lit, glowing: GPUPipeline
 
-    init(_ library: MTLLibrary, format: MTLPixelFormat) {
-        lit = makeState(library, "particleLitFragment", vertex: "particleVertex", formats: [format], rgb: (.sourceAlpha, .oneMinusSourceAlpha),
-                        alpha: (.one, .oneMinusSourceAlpha))
-        glowing = makeState(library, "particleGlowFragment", vertex: "particleVertex", formats: [format], rgb: (.one, .one), alpha: (.zero, .one))
+    init(_ gpu: GPU, format: PixelFormat) {
+        lit = gpu.pipeline("particleLitFragment", vertex: "particleVertex", formats: [format], rgb: (.sourceAlpha, .oneMinusSourceAlpha),
+                           alpha: (.one, .oneMinusSourceAlpha))
+        glowing = gpu.pipeline("particleGlowFragment", vertex: "particleVertex", formats: [format], rgb: (.one, .one), alpha: (.zero, .one))
     }
 }
-
-// The particles' shaders. Each particle is an instance of four `float4`s, as `Screen.lay` writes them: its corner, width
-// and height in the pass's pixels; its color; its frame's corners in its texture; and how it's lit (Screen.Lighting).
-// It's drawn as a quad of six corners.
-let particleShaders = """
-struct Particle { float4 place; float4 color; float4 uv; float4 more; };
-
-constant float2 particleCorners[6] = { float2(0, 0), float2(1, 0), float2(0, 1), float2(1, 0), float2(1, 1), float2(0, 1) };
-
-vertex Vertex particleVertex(uint i [[vertex_id]], uint n [[instance_id]], constant Particle *p [[buffer(0)]], constant float2 &size [[buffer(1)]]) {
-    Particle q = p[n];
-    float2 corner = particleCorners[i];
-    float2 xy = (q.place.xy + corner * q.place.zw) / size * 2 - 1;
-    Vertex out;
-    out.position = float4(xy.x, -xy.y, 0, 1);
-    // Turned by quarters, clockwise: the corner shows the frame's corner a quarter back round.
-    int quarter = int(q.more.y);
-    float2 frame = quarter == 1 ? float2(corner.y, 1 - corner.x) : quarter == 2 ? 1 - corner : quarter == 3 ? float2(1 - corner.y, corner.x) : corner;
-    out.uv = mix(q.uv.xy, q.uv.zw, frame);
-    out.color = q.color;
-    out.effects = float4(0, 1, q.more.x, 0);
-    out.more = float4(0);
-    out.shade = float3(1);
-    out.stand = float4(0);
-    return out;
-}
-
-// A particle that glows, added to what's under it: unlit, but for rain, which adds the light it catches.
-fragment float4 particleGlowFragment(Vertex in [[stage_in]], texture2d<float> t [[texture(0)]], texture2d<float> shadowed [[texture(1)]],
-                                     texture2d<float> open [[texture(2)]], texture2d<float> clouds [[texture(3)]], constant View &view [[buffer(0)]]) {
-    constexpr sampler nearest(filter::nearest);
-    float4 c = t.sample(nearest, in.uv) * in.color;
-    return float4(lit(c.rgb, in.effects.z, float3(1), in.position.xy, view, shadowed, open, clouds) * c.a, c.a);
-}
-
-// A particle drawn over what's under it, lit as it says.
-fragment float4 particleLitFragment(Vertex in [[stage_in]], texture2d<float> t [[texture(0)]], texture2d<float> shadowed [[texture(1)]],
-                                    texture2d<float> open [[texture(2)]], texture2d<float> clouds [[texture(3)]], constant View &view [[buffer(0)]]) {
-    constexpr sampler nearest(filter::nearest);
-    float4 c = t.sample(nearest, in.uv) * in.color;
-    if (c.a <= 0) discard_fragment();
-    return float4(lit(c.rgb, in.effects.z, float3(1), in.position.xy, view, shadowed, open, clouds), c.a);
-}
-
-"""
